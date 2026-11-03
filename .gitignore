@@ -1,0 +1,51 @@
+# ── Local reference material (never committed) ────────────────────────
+.legacy-assets/
+# Original source contains a real operator name; keep the byte-exact copy local.
+# Public provenance is summarized in docs/.prepare/publication-notes.md.
+docs/.prepare/archive/brainstorm-plan.v1.0-original.md
+
+# ── Secrets (security-patterns.md: only .env.example is committed) ────
+.env
+.env.*
+!.env.example
+
+# ── Runtime data root (/data in the container; local runs use ./data) ─
+data/
+
+# ── Python / uv ───────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+
+# ── Tool caches ───────────────────────────────────────────────────────
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ── Claude Code local state ───────────────────────────────────────────
+.claude/settings.local.json
+.claude/worktrees/
+
+# ── Editors / OS ──────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# ── Session notes (agent handoffs; decisions live in docs/.prepare/) ─
+HANDOFF.md
+.handoffs/
+
+# ── Raw delegated-session output (provenance only, not canonical) ────
+docs/.prepare/delegation/
+
+# ── Generated demo deck (rebuilt by demo/generate_pptx.py) ───────────
+demo/*.pptx
+
+# ── graphify knowledge-graph output ──────────────────────────────────
+graphify-out/

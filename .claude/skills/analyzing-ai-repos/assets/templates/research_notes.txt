@@ -1,0 +1,52 @@
+# [REPO_NAME] — Research Notes
+
+## Research Scope
+
+**Analyzed patterns:** [LIST OF PAT_NNN IDs]
+**Detected frameworks:** [LIST OF FRAMEWORKS]
+**Research depth:** [deep|light|skip]
+**Queries executed:** [COUNT]
+
+## Findings by Pattern
+
+### [PAT_NNN]: [PATTERN_NAME]
+
+**Query:** "[SEARCH_QUERY]"
+
+| Finding | Source | Relevance |
+|---------|--------|-----------|
+| [FINDING] | [URL] | [high/medium/low] |
+
+**Key takeaway:** [ONE SENTENCE SUMMARY]
+
+[Repeat for each pattern with research findings]
+
+## Best Practices
+
+[Recommended approaches from authoritative sources, linked to patterns]
+
+| Practice | Source | Applies to |
+|----------|--------|-----------|
+| [PRACTICE] | [URL] | [PAT_NNN] |
+
+## Alternatives
+
+[Alternative frameworks or patterns that solve similar problems]
+
+| Current approach | Alternative | Tradeoffs | Source |
+|-----------------|-------------|-----------|--------|
+| [CURRENT] | [ALTERNATIVE] | [TRADEOFFS] | [URL] |
+
+## Trends
+
+[Current direction of the ecosystem relevant to detected patterns]
+
+| Trend | Impact on this repo | Source |
+|-------|-------------------|--------|
+| [TREND] | [IMPACT] | [URL] |
+
+## Related Documents
+
+- [Overview](overview.md) — architecture context
+- [Logic Map](logic-map.md) — pattern connections
+- [Context](context.md) — distilled summary

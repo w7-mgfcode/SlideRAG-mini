@@ -1,0 +1,88 @@
+---
+# Skill Generator Input Brief
+# Fill what you know — leave unknowns as TBD or delete the line.
+# Minimum viable: Section 1 only. More detail = better first draft.
+
+### Section 1: Identity (required)
+
+name: ""              # kebab-case, max 64 chars, gerund preferred
+domain: ""            # Primary domain (e.g., "CI/CD", "research", "documentation")
+one_liner: ""         # One sentence: what does this skill DO?
+
+### Section 2: Trigger Boundary
+
+triggers:
+  - ""                # Realistic user phrases (3-6 recommended)
+  - ""
+  - ""
+exclusions:
+  - ""                # Adjacent tasks this skill should NOT handle
+  - ""
+
+### Section 3: Workflow Shape
+
+workflow_type: ""     # linear | multi-phase | iterative-loop | event-driven | orchestrator
+phases:
+  - name: ""
+    description: ""
+    inputs: ""
+    outputs: ""
+    validation: ""
+  - name: ""
+    description: ""
+    inputs: ""
+    outputs: ""
+    validation: ""
+
+### Section 4: Complexity Signals
+
+complexity_tier: ""          # simple (1-3) | moderate (4-6) | complex (7-10)
+has_conditional_routing: ""  # yes/no
+has_loop_back: ""            # yes/no
+has_state_management: ""     # yes/no
+has_external_dependencies: "" # yes/no
+autonomous: ""               # yes/no
+
+### Section 5: Tools & Environment
+
+tools_needed:
+  - ""                # Built-in: Bash, Read, Write, Edit, Glob, Grep, WebSearch, WebFetch, Agent
+  - ""                # MCP: ServerName:tool_name format
+runtime_dependencies:
+  - ""                # e.g., "Python 3.8+", "uv", "Node.js 18+"
+compatibility: ""     # Any platform/environment constraints
+
+### Section 6: Output Expectations
+
+output_files:
+  - type: ""
+    purpose: ""
+    description: ""
+scripts_needed:
+  - name: ""
+    purpose: ""
+    interface: ""
+templates_needed:
+  - name: ""
+    purpose: ""
+references_needed:
+  - name: ""
+    purpose: ""
+
+### Section 7: Safety & Constraints
+
+safety_rules:
+  - ""
+  - ""
+restricted_paths:
+  - ""
+data_sensitivity: ""  # none | low | medium | high
+
+### Section 8: Reference Material (optional)
+
+urls:
+  - ""
+existing_skills:
+  - ""
+prior_art:
+  - ""

@@ -1,0 +1,81 @@
+# [REPO_NAME] — Diagrams
+
+## Component Map
+
+[Major components and their connections]
+
+```mermaid
+graph TD
+    [COMPONENT_A][Label A] --> [COMPONENT_B][Label B]
+    [COMPONENT_B] --> [COMPONENT_C][Label C]
+```
+
+[Brief explanation of the component relationships shown above]
+
+## Execution Flow
+
+[Main execution path from entry point through phases/steps]
+
+```mermaid
+flowchart TD
+    START[Entry Point] --> STEP_1[Step 1]
+    STEP_1 --> DECISION{Decision?}
+    DECISION -->|Yes| STEP_2A[Path A]
+    DECISION -->|No| STEP_2B[Path B]
+    STEP_2A --> END[Output]
+    STEP_2B --> END
+```
+
+[Brief explanation of the execution flow]
+
+## Sequence Diagram
+
+[Multi-step interactions between components — include when agent
+interactions or request/response patterns exist]
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant A as [COMPONENT_A]
+    participant B as [COMPONENT_B]
+    U->>A: [ACTION]
+    A->>B: [REQUEST]
+    B-->>A: [RESPONSE]
+    A-->>U: [RESULT]
+```
+
+[Brief explanation of the interaction sequence]
+
+## State Diagram
+
+[Include when state machines or phase transitions are detected]
+
+```mermaid
+stateDiagram-v2
+    [*] --> STATE_1
+    STATE_1 --> STATE_2: [TRIGGER]
+    STATE_2 --> STATE_3: [TRIGGER]
+    STATE_3 --> [*]: [TRIGGER]
+```
+
+[Brief explanation of state transitions]
+
+## Sub-Diagrams
+
+[For complex repos, split into sub-diagrams by module/domain.
+Each sub-diagram should have max 30 nodes.]
+
+### [Module/Domain Name]
+
+```mermaid
+graph TD
+    [NODES]
+```
+
+[Brief explanation]
+
+## Related Documents
+
+- [Overview](overview.md) — architecture context
+- [Logic Map](logic-map.md) — detailed connections
+- [Context](context.md) — distilled knowledge base

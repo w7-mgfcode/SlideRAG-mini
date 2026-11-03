@@ -1,0 +1,156 @@
+---
+# Skill Generator Input Brief — Worked Example
+# Skill: autoresearch (autonomous research orchestration)
+
+### Section 1: Identity (required)
+
+name: "autoresearch"
+domain: "research"
+one_liner: "Autonomous research orchestration — manages the full lifecycle from literature survey to published paper."
+
+### Section 2: Trigger Boundary
+
+triggers:
+  - "research this"
+  - "investigate"
+  - "run a study on"
+  - "literature review"
+  - "deep dive into"
+exclusions:
+  - "one-off web searches"
+  - "simple fact lookups"
+  - "code debugging"
+
+### Section 3: Workflow Shape
+
+workflow_type: "iterative-loop"
+phases:
+  - name: "Bootstrap"
+    description: "Set up workspace and clarify research question"
+    inputs: "User brief or question"
+    outputs: "Workspace dirs + research-state.yaml"
+    validation: "State file exists and passes schema validation"
+  - name: "Survey"
+    description: "Gather literature and prior work"
+    inputs: "Search terms, web access"
+    outputs: "Literature notes in literature/"
+    validation: "5+ sources, 2+ per key claim"
+  - name: "Hypothesize"
+    description: "Form testable hypotheses"
+    inputs: "Literature survey results"
+    outputs: "2-5 hypotheses in state"
+    validation: "Each hypothesis is falsifiable with defined test method"
+  - name: "Experiment"
+    description: "Run experiments for each hypothesis"
+    inputs: "Hypothesis + experiment design"
+    outputs: "Results in experiments/"
+    validation: "Success criteria evaluated for each experiment"
+  - name: "Synthesize"
+    description: "Integrate results, identify gaps"
+    inputs: "All experiment results + literature"
+    outputs: "Synthesis doc + HTML presentation"
+    validation: "All hypotheses resolved or gaps documented"
+  - name: "Write"
+    description: "Produce final research report"
+    inputs: "All findings and synthesis docs"
+    outputs: "findings/report.md + final presentation"
+    validation: "Report covers all findings with evidence chains"
+
+### Section 4: Complexity Signals
+
+complexity_tier: "complex (9)"
+has_conditional_routing: "yes — synthesis can trigger new hypotheses"
+has_loop_back: "yes — synthesis loops back to survey when gaps found"
+has_state_management: "yes — research-state.yaml tracks all entities"
+has_external_dependencies: "yes — web search for literature"
+autonomous: "yes — runs full cycles without user input"
+
+### Section 5: Tools & Environment
+
+tools_needed:
+  - "Bash"
+  - "Read"
+  - "Write"
+  - "Edit"
+  - "Glob"
+  - "Grep"
+  - "WebSearch"
+  - "WebFetch"
+  - "Agent"
+runtime_dependencies:
+  - "Python 3.8+"
+  - "uv"
+compatibility: "Requires web access for literature search. Works in Claude Code CLI."
+
+### Section 6: Output Expectations
+
+output_files:
+  - type: "SKILL.md"
+    purpose: "Main skill definition with research workflow"
+    description: "Orchestrates the full research lifecycle"
+  - type: "scripts/"
+    purpose: "State management and report generation"
+    description: "init_workspace.py, update_state.py, validate_state.py, generate_presentation.py"
+  - type: "references/"
+    purpose: "State schema and methodology guides"
+    description: "state-schema.md, research-methodology.md"
+  - type: "assets/templates/"
+    purpose: "Document scaffolding"
+    description: "Templates for literature notes, hypotheses, experiments, synthesis, and reports"
+
+scripts_needed:
+  - name: "init_workspace.py"
+    purpose: "Bootstrap workspace dirs and initial state"
+    interface: "--project-name, --question, --output-dir, --force → JSON"
+  - name: "update_state.py"
+    purpose: "Structured state updates via subcommands"
+    interface: "phase|add-literature|add-hypothesis|... --state → JSON"
+  - name: "validate_state.py"
+    purpose: "Validate state against schema"
+    interface: "--state → JSON {valid, errors}"
+  - name: "generate_presentation.py"
+    purpose: "Generate HTML progress report from state"
+    interface: "--state, --output, --update-state → JSON"
+
+templates_needed:
+  - name: "experiment_design.txt"
+    purpose: "Scaffold for designing experiments"
+  - name: "experiment_results.txt"
+    purpose: "Recording experiment outcomes"
+  - name: "literature_note.txt"
+    purpose: "Structured literature review notes"
+  - name: "hypothesis.txt"
+    purpose: "Forming hypotheses with evidence"
+  - name: "synthesis.txt"
+    purpose: "End-of-iteration synthesis"
+  - name: "research_report.txt"
+    purpose: "Final research report"
+
+references_needed:
+  - name: "state-schema.md"
+    purpose: "Full YAML state schema with field rules and valid transitions"
+  - name: "research-methodology.md"
+    purpose: "Research methodology guide adapted for AI-driven investigation"
+
+### Section 7: Safety & Constraints
+
+safety_rules:
+  - "Never fabricate data or results"
+  - "Never present weak evidence as strong"
+  - "Never modify experiment results after recording"
+  - "Never run destructive commands without safeguards"
+  - "Never claim certainty when evidence is insufficient"
+restricted_paths:
+  - ".git/"
+  - ".env"
+  - "secrets/"
+data_sensitivity: "low"
+
+### Section 8: Reference Material (optional)
+
+urls: []
+existing_skills:
+  - "skill-generator (the pipeline this feeds into)"
+prior_art:
+  - "KB_INPUT_BRIEF.md template structure"
+  - "Archon RAG workflow patterns"

@@ -1,0 +1,64 @@
+# [REPO_NAME] — Context Document
+
+## Identity
+
+[One paragraph: what this is, what it does, who it's for.
+This should be self-contained — someone reading only this paragraph
+should understand the repo's purpose.]
+
+## Core Concepts
+
+[Key abstractions, mental models, and terminology specific to this repo.
+Define domain-specific terms that appear in the codebase.]
+
+| Concept | Definition | Where it appears |
+|---------|-----------|-----------------|
+| [TERM] | [DEFINITION] | [FILES] |
+
+## Architecture
+
+[Condensed architecture — essential structural facts only.
+Link to overview.md for full details.]
+
+**Type:** [REPO_TYPE]
+**Stack:** [KEY_TECHNOLOGIES]
+**Pattern:** [PRIMARY_WORKFLOW_PATTERN]
+
+[2-3 sentences on how the system is organized]
+
+## Patterns
+
+[Condensed pattern catalog — type, name, purpose, key files]
+
+| ID | Type | Name | Key files |
+|----|------|------|-----------|
+| [PAT_NNN] | [TYPE] | [NAME] | [FILES] |
+
+## Integration Points
+
+| System | Protocol | Purpose |
+|--------|----------|---------|
+| [SYSTEM] | [PROTOCOL] | [PURPOSE] |
+
+## Key Files
+
+[Top 10-15 most important files with one-line purpose descriptions]
+
+| File | Purpose |
+|------|---------|
+| [PATH] | [PURPOSE] |
+
+## Usage
+
+**Run:** [COMMAND]
+**Configure:** [CONFIG_FILE or APPROACH]
+**Extend:** [HOW_TO_ADD_NEW_FEATURES]
+
+## Research Context
+
+[Condensed research findings — only the most relevant best practices.
+Link to research-notes.md for full details.]
+
+- [KEY_FINDING_1] — [SOURCE]
+- [KEY_FINDING_2] — [SOURCE]
+- [KEY_FINDING_3] — [SOURCE]

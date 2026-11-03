@@ -1,0 +1,34 @@
+# Keep the image small and secret-free (security-patterns.md, plan SC-01)
+.git/
+.gitignore
+.env
+.env.*
+!.env.example
+data/
+.legacy-assets/
+
+# Dev tooling and docs not needed at runtime
+.claude/
+.agents/
+.handoffs/
+HANDOFF.md
+docs/
+tests/
+graphify-out/
+demo/*.pptx
+
+# Python / tool caches
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

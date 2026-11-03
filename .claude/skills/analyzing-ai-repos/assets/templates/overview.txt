@@ -1,0 +1,52 @@
+# [REPO_NAME] — Architecture Overview
+
+## Repository Identity
+
+- **Name:** [REPO_NAME]
+- **URL:** [REPO_URL or "local"]
+- **Primary language:** [LANGUAGE]
+- **Repo type:** [REPO_TYPE] (confidence: [CONFIDENCE])
+- **Classification signals:** [SIGNALS]
+
+## Tech Stack
+
+| Technology | Version | Role |
+|------------|---------|------|
+| [FRAMEWORK] | [VERSION] | [PURPOSE] |
+| [LIBRARY] | [VERSION] | [PURPOSE] |
+
+## Architecture Summary
+
+[2-3 paragraphs explaining what the system does, how it's structured,
+and the key architectural decisions. Focus on WHY choices were made,
+not just WHAT exists.]
+
+## Key Decisions
+
+| Decision | Rationale | Evidence |
+|----------|-----------|----------|
+| [DECISION] | [WHY] | [FILE:LINE or pattern reference] |
+
+## Entry Points
+
+| Entry point | Purpose | Command |
+|------------|---------|---------|
+| [FILE] | [PURPOSE] | [HOW_TO_RUN] |
+
+## Directory Structure
+
+```
+[REPO_NAME]/
+├── [DIR_1]/          # [PURPOSE]
+│   ├── [SUBDIR]/     # [PURPOSE]
+│   └── [FILE]        # [PURPOSE]
+├── [DIR_2]/          # [PURPOSE]
+└── [CONFIG_FILE]     # [PURPOSE]
+```
+
+## Related Documents
+
+- [Logic Map](logic-map.md) — detailed dependency chains and data flow
+- [Diagrams](diagrams.md) — Mermaid visualizations
+- [Research Notes](research-notes.md) — external best practices
+- [Context](context.md) — distilled knowledge base

@@ -1,0 +1,72 @@
+{
+  "meta": {
+    "repo_name": "[REPO_NAME]",
+    "repo_url": "[REPO_URL]",
+    "analyzed_at": "[ISO_8601_TIMESTAMP]",
+    "research_depth": "[deep|light|skip]",
+    "incremental": false,
+    "skill_version": "1.0.0"
+  },
+  "classification": {
+    "repo_type": "[REPO_TYPE]",
+    "confidence": 0.0,
+    "signals": [],
+    "scores": {}
+  },
+  "stats": {
+    "total_files_scanned": 0,
+    "files_analyzed": 0,
+    "files_skipped": 0,
+    "patterns_detected": 0,
+    "research_queries": 0,
+    "research_findings": 0
+  },
+  "patterns": [
+    {
+      "id": "PAT_001",
+      "type": "[PATTERN_TYPE]",
+      "name": "[PATTERN_NAME]",
+      "description": "[DESCRIPTION]",
+      "files": [],
+      "evidence": "[EVIDENCE]",
+      "frameworks": [],
+      "connections": [],
+      "confidence": "high"
+    }
+  ],
+  "key_files": [
+    {
+      "path": "[FILE_PATH]",
+      "purpose": "[PURPOSE]",
+      "relevance_score": 0.0,
+      "patterns": ["PAT_001"]
+    }
+  ],
+  "dependencies": {
+    "frameworks": [],
+    "libraries": [],
+    "external_services": [],
+    "runtime": []
+  },
+  "research": {
+    "queries": [
+      {
+        "query": "[SEARCH_QUERY]",
+        "pattern_id": "PAT_001",
+        "results_count": 0,
+        "top_finding": "[FINDING_SUMMARY]",
+        "source_url": "[URL]"
+      }
+    ],
+    "best_practices": [],
+    "alternatives": []
+  },
+  "outputs": {
+    "overview": "overview.md",
+    "logic_map": "logic-map.md",
+    "diagrams": "diagrams.md",
+    "research_notes": "research-notes.md",
+    "context": "context.md",
+    "summary_card": "summary-card.md"
+  }
+}

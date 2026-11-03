@@ -1,0 +1,54 @@
+# [REPO_NAME] — Summary Card
+
+> One-page executive summary for quick sharing and reference.
+
+| Field | Value |
+|-------|-------|
+| **Repo** | [REPO_NAME] |
+| **URL** | [REPO_URL or "local"] |
+| **Type** | [REPO_TYPE] ([CONFIDENCE]% confidence) |
+| **Language** | [PRIMARY_LANGUAGE] |
+| **Stack** | [KEY_TECHNOLOGIES] |
+| **Analyzed** | [DATE] |
+| **Research depth** | [deep/light/skip] |
+
+## Top 5 Patterns
+
+| # | Pattern | Type | Confidence | Key file |
+|---|---------|------|------------|----------|
+| 1 | [PAT_001_NAME] | [TYPE] | [high/med/low] | [FILE] |
+| 2 | [PAT_002_NAME] | [TYPE] | [high/med/low] | [FILE] |
+| 3 | [PAT_003_NAME] | [TYPE] | [high/med/low] | [FILE] |
+| 4 | [PAT_004_NAME] | [TYPE] | [high/med/low] | [FILE] |
+| 5 | [PAT_005_NAME] | [TYPE] | [high/med/low] | [FILE] |
+
+## Key Diagram
+
+```mermaid
+[PRIMARY_FLOWCHART — the most important execution flow diagram]
+```
+
+## Quick Stats
+
+| Metric | Value |
+|--------|-------|
+| Files analyzed | [COUNT] |
+| Patterns detected | [COUNT] |
+| Research queries | [COUNT] |
+| External integrations | [COUNT] |
+| Entry points | [COUNT] |
+
+## One-Paragraph Summary
+
+[CONDENSED_DESCRIPTION — what this repo does, how it works, and what
+makes it notable. 3-5 sentences maximum. Written for someone who has
+30 seconds to understand the repo.]
+
+## Full Analysis
+
+- [Overview](overview.md)
+- [Logic Map](logic-map.md)
+- [Diagrams](diagrams.md)
+- [Research Notes](research-notes.md)
+- [Context](context.md)
+- [Machine-readable](analysis.json)

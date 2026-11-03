@@ -1,0 +1,59 @@
+# [REPO_NAME] — Logic Map
+
+## Module Dependencies
+
+[Map which modules import/use which other modules]
+
+```mermaid
+graph TD
+    [MODULE_A] --> [MODULE_B]
+    [MODULE_A] --> [MODULE_C]
+    [MODULE_B] --> [MODULE_D]
+```
+
+| Source module | Depends on | Type | Evidence |
+|--------------|-----------|------|----------|
+| [MODULE] | [DEPENDENCY] | import/call/config | [FILE:LINE] |
+
+## Data Flow
+
+[How data moves through the system from input to output]
+
+```mermaid
+flowchart LR
+    INPUT[Input: DATA_TYPE] --> PHASE_1[PHASE_NAME]
+    PHASE_1 --> PHASE_2[PHASE_NAME]
+    PHASE_2 --> OUTPUT[Output: DATA_TYPE]
+```
+
+| Stage | Input | Processing | Output | Files |
+|-------|-------|------------|--------|-------|
+| [STAGE] | [DATA_TYPE] | [OPERATION] | [DATA_TYPE] | [FILES] |
+
+## Control Flow
+
+[Decision points, routing logic, branching paths]
+
+| Decision point | Condition | True path | False path | File |
+|---------------|-----------|-----------|------------|------|
+| [DECISION] | [CONDITION] | [ACTION] | [ACTION] | [FILE:LINE] |
+
+## Integration Points
+
+| External system | Protocol | Purpose | Files |
+|----------------|----------|---------|-------|
+| [SYSTEM] | [API/CLI/SDK] | [PURPOSE] | [FILES] |
+
+## Pattern Connections
+
+[How detected patterns relate to each other — reference PAT_NNN IDs]
+
+| Pattern | Connects to | Relationship | Evidence |
+|---------|------------|-------------|----------|
+| [PAT_NNN] | [PAT_NNN] | feeds-into/depends-on/wraps | [DESCRIPTION] |
+
+## Related Documents
+
+- [Overview](overview.md) — high-level architecture
+- [Diagrams](diagrams.md) — visual representations
+- [Context](context.md) — distilled knowledge base
