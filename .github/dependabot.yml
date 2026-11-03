@@ -1,0 +1,55 @@
+# Requires M1 manifests (uv.lock/pyproject.toml, Dockerfile and CI workflow).
+# Before merging bot PRs, link an open issue and normalize the squash title.
+version: 2
+updates:
+- package-ecosystem: uv
+  directory: /
+  schedule:
+    interval: weekly
+    day: monday
+  open-pull-requests-limit: 3
+  labels:
+  - area:repo
+  commit-message:
+    prefix: chore(repo)
+  groups:
+    python-minor-patch:
+      patterns:
+      - '*'
+      update-types:
+      - minor
+      - patch
+- package-ecosystem: github-actions
+  directory: /
+  schedule:
+    interval: weekly
+    day: monday
+  open-pull-requests-limit: 3
+  labels:
+  - area:ci
+  commit-message:
+    prefix: chore(ci)
+  groups:
+    actions-minor-patch:
+      patterns:
+      - '*'
+      update-types:
+      - minor
+      - patch
+- package-ecosystem: docker
+  directory: /
+  schedule:
+    interval: weekly
+    day: monday
+  open-pull-requests-limit: 3
+  labels:
+  - area:deploy
+  commit-message:
+    prefix: chore(deploy)
+  groups:
+    docker-minor-patch:
+      patterns:
+      - '*'
+      update-types:
+      - minor
+      - patch
