@@ -122,7 +122,12 @@ def _validate_base_url(name: str, value: str | None) -> str | None:
 
 def endpoint_identity(base_url: str | None) -> str:
     """Non-secret endpoint identity recorded in the index configuration."""
-    return (base_url or DEFAULT_OPENAI_BASE_URL).rstrip("/").lower()
+    parts = urlsplit(base_url or DEFAULT_OPENAI_BASE_URL)
+    # Scheme/host are case-insensitive; a path may identify a different backend
+    # when its case changes. Config validation already excludes URL credentials.
+    return parts._replace(
+        scheme=parts.scheme.lower(), netloc=parts.netloc.lower(), path=parts.path.rstrip("/")
+    ).geturl()
 
 
 def resolve_data_dir(raw: str) -> Path:

@@ -33,6 +33,7 @@ from app.rag import (
     RetrievedChunk,
     StructuredAnswer,
     StructuredOutputUnsupportedError,
+    _verify_collection,
     add_chunks,
     build_embeddings,
     build_messages,
@@ -185,6 +186,29 @@ def test_open_store_foreign_collection_refuses_without_mutation(
     client = _chroma_client(data_dir)
     assert [c.name for c in client.list_collections()] == ["other"]
     assert client.get_collection("other").count() == 1
+
+
+def test_stored_embedding_configuration_is_rejected_without_deserialization(make_settings) -> None:
+    settings = make_settings()
+
+    class UntrustedCollection:
+        name = COLLECTION_NAME
+        metadata = {"index_config_id": settings.index_config.fingerprint()}
+        configuration_json = {
+            "hnsw": {"space": "cosine"},
+            "embedding_function": {
+                "type": "known",
+                "name": "sentence_transformer",
+                "config": {"kwargs": {"trust_remote_code": True}},
+            },
+        }
+
+        @property
+        def configuration(self):
+            raise AssertionError("must not deserialize untrusted embedding configuration")
+
+    with pytest.raises(IndexMismatchError, match="persisted embedding functions"):
+        _verify_collection(UntrustedCollection(), settings.index_config)
 
 
 def test_retrieve_missing_metadata_raises(make_settings, fake_embeddings) -> None:
@@ -367,6 +391,7 @@ def test_stack_proof_live_structured_answer_and_refusal(live_settings) -> None:
     generate = build_structured_generator(live_settings)
     supported = generate_answer(generate, "What was the peak latency during INC-042?", _retrieved())
     assert supported.status == "answered", supported
+    assert supported.cited, "a supported live answer must cite at least one source"
     assert set(supported.cited) <= {"S1", "S2", "S3"}
     unsupported = generate_answer(
         generate,

@@ -54,6 +54,20 @@ def test_load_settings_blank_key_is_unset(data_dir: Path) -> None:
     assert settings.openai_api_key_set is False
 
 
+def test_index_identity_preserves_endpoint_path_case(data_dir: Path) -> None:
+    def identity(endpoint: str) -> str:
+        return load_settings(
+            {"DATA_DIR": str(data_dir), "EMBEDDING_BASE_URL": endpoint}
+        ).index_config.fingerprint()
+
+    assert identity("https://example.invalid/TeamA/v1") != identity(
+        "https://example.invalid/teama/v1"
+    )
+    assert identity("HTTPS://EXAMPLE.INVALID/TeamA/v1/") == identity(
+        "https://example.invalid/TeamA/v1"
+    )
+
+
 @pytest.mark.parametrize(
     ("name", "value"),
     [

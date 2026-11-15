@@ -108,7 +108,14 @@ class RetrievedChunk:
 
 
 def _verify_collection(collection: Any, index_config: IndexConfig) -> None:
-    space = (collection.configuration or {}).get("hnsw", {}).get("space")
+    # Chroma's .configuration property constructs embedding functions from stored
+    # JSON. Inspect the raw public property instead, before any deserialization.
+    # Embeddings belong to our injected LangChain client, never to stored code.
+    configuration = collection.configuration_json or {}
+    embedding_config = configuration.get("embedding_function")
+    if embedding_config not in (None, {"type": "legacy"}):
+        raise IndexMismatchError("persisted embedding functions are not supported")
+    space = (configuration.get("hnsw") or {}).get("space")
     stored_id = (collection.metadata or {}).get("index_config_id")
     if space != index_config.distance or stored_id != index_config.fingerprint():
         logger.error("index configuration mismatch: collection=%s", collection.name)
@@ -129,7 +136,7 @@ def open_store(settings: Settings, embeddings: Embeddings) -> Chroma:
         path=str(chroma_dir), settings=ChromaSettings(anonymized_telemetry=False)
     )
     try:
-        collection = client.get_collection(COLLECTION_NAME)
+        collection = client.get_collection(COLLECTION_NAME, embedding_function=None)
     except chromadb.errors.NotFoundError:
         # Only an empty chroma root may be initialised; foreign collections mean
         # existing durable data, which is preserved and refused (EXEC-01 §§ 3-4).
