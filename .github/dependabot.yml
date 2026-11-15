@@ -13,11 +13,10 @@ updates:
   commit-message:
     prefix: chore(repo)
   groups:
-    python-minor-patch:
+    python-patch:
       patterns:
       - '*'
       update-types:
-      - minor
       - patch
 - package-ecosystem: github-actions
   directory: /
@@ -46,6 +45,12 @@ updates:
   - area:deploy
   commit-message:
     prefix: chore(deploy)
+  # EXEC-01 fixes the runtime at Python 3.12; patch/digest updates remain eligible.
+  ignore:
+  - dependency-name: python
+    update-types:
+    - version-update:semver-major
+    - version-update:semver-minor
   groups:
     docker-minor-patch:
       patterns:
