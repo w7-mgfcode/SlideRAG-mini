@@ -60,8 +60,9 @@ Once the Python project exists, its gates are `uv run ruff check .`,
 Live integration and EC2 acceptance require separate evidence.
 
 The canonical handoff package is `.agents/skills/writing-session-handoffs/`.
-Codex uses `$writing-session-handoffs`; Claude Code retains
-`/writing-session-handoffs` through its thin `.claude/skills/` wrapper.
+Codex is expected to use `$writing-session-handoffs` and Claude Code
+`/writing-session-handoffs` through its thin `.claude/skills/` wrapper;
+runtime discovery in both clients is untested as of 2026-11-15.
 Resolve resources relative to the shared skill file, and outputs relative to
 the target repository root, even when starting in a subdirectory. Other skills,
 hooks, permissions and integrations remain in their existing locations.
