@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Governing execution plan
+    url: https://github.com/w7-mgfcode/SlideRAG-mini/blob/main/docs/.prepare/execution-plan.md
+    about: Read scope, acceptance criteria and milestone timeboxes before opening work.
