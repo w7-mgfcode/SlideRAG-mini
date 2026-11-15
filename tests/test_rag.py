@@ -155,10 +155,36 @@ def test_add_chunks_reupload_keeps_count_stable(make_settings, fake_embeddings) 
     assert len(store.get()["ids"]) == len(SYNTHETIC_CHUNKS)
 
 
-def test_open_store_index_config_mismatch_raises(make_settings, fake_embeddings) -> None:
+def _chroma_client(data_dir: Path):
+    return chromadb.PersistentClient(
+        path=str(data_dir / "chroma"), settings=ChromaSettings(anonymized_telemetry=False)
+    )
+
+
+def test_open_store_index_config_mismatch_raises(
+    make_settings, fake_embeddings, data_dir: Path
+) -> None:
     add_chunks(open_store(make_settings(), fake_embeddings), SYNTHETIC_CHUNKS[:1])
     with pytest.raises(IndexMismatchError):
         open_store(make_settings(EMBEDDING_MODEL="text-embedding-3-large"), fake_embeddings)
+    client = _chroma_client(data_dir)
+    assert [c.name for c in client.list_collections()] == [COLLECTION_NAME]
+    assert client.get_collection(COLLECTION_NAME).count() == 1
+
+
+def test_open_store_foreign_collection_refuses_without_mutation(
+    make_settings, fake_embeddings, data_dir: Path
+) -> None:
+    client = _chroma_client(data_dir)
+    other = client.create_collection("other", embedding_function=None)
+    other.add(ids=["x"], embeddings=fake_embeddings.embed_documents(["SYNTHETIC"]), documents=["x"])
+
+    with pytest.raises(IndexMismatchError):
+        open_store(make_settings(), fake_embeddings)
+
+    client = _chroma_client(data_dir)
+    assert [c.name for c in client.list_collections()] == ["other"]
+    assert client.get_collection("other").count() == 1
 
 
 def test_retrieve_missing_metadata_raises(make_settings, fake_embeddings) -> None:

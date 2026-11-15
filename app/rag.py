@@ -120,6 +120,7 @@ def open_store(settings: Settings, embeddings: Embeddings) -> Chroma:
 
     ``get_or_create_collection`` silently keeps an existing collection's metadata
     and configuration, so an existing collection is opened and verified instead.
+    The collection is created only in a chroma root that holds no collections.
     """
     index_config = settings.index_config
     chroma_dir = settings.paths.chroma
@@ -130,6 +131,16 @@ def open_store(settings: Settings, embeddings: Embeddings) -> Chroma:
     try:
         collection = client.get_collection(COLLECTION_NAME)
     except chromadb.errors.NotFoundError:
+        # Only an empty chroma root may be initialised; foreign collections mean
+        # existing durable data, which is preserved and refused (EXEC-01 §§ 3-4).
+        existing = client.count_collections()
+        if existing > 0:
+            logger.error(
+                "chroma root holds %d collection(s) but not %s; refusing to initialise",
+                existing,
+                COLLECTION_NAME,
+            )
+            raise IndexMismatchError("chroma root holds data from another index") from None
         collection = client.create_collection(
             COLLECTION_NAME,
             configuration={"hnsw": {"space": index_config.distance}},
