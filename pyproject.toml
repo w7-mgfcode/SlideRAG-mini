@@ -1,0 +1,51 @@
+[project]
+name = "sliderag-mini"
+version = "0.0.0"
+description = "Presentation-grounded knowledge assistant over synthetic PPTX decks (portfolio MVP)."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "jinja2",
+    "python-multipart",
+    "python-pptx",
+    "langchain-core",
+    "langchain-openai",
+    "langchain-chroma",
+    "langgraph",
+    "openai",
+    "chromadb",
+]
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "pytest",
+    "httpx",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+# Agent toolkit scripts and docs are not application code.
+extend-exclude = [".claude", ".agents", "docs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "conftest"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S603"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--strict-markers"
+markers = [
+    "integration: requires a real OPENAI_API_KEY and makes external API calls (skipped without it)",
+]
