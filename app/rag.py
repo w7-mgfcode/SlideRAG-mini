@@ -65,6 +65,14 @@ class IndexMismatchError(RuntimeError):
     """The persisted collection does not match the configured index identity."""
 
 
+class StructuredOutputUnsupportedError(RuntimeError):
+    """The configured model cannot use native json_schema structured output."""
+
+
+# Prefix of langchain-openai 1.8.0's override warning (regex, matched at the start).
+_METHOD_OVERRIDE_WARNING = r"Cannot use method='json_schema' with model "
+
+
 class InvalidChunkMetadataError(ValueError):
     """A stored chunk is missing required source metadata."""
 
@@ -221,9 +229,9 @@ def build_structured_generator(
 ) -> StructuredGenerator:
     """Build a strict json_schema generator on the pinned langchain-openai.
 
-    Any warning emitted while binding (for example langchain-openai silently
-    switching an unsupported model to function calling) is raised as an error:
-    there is no silent substitution of another structured-output method.
+    langchain-openai's warning that it is switching an unsupported model to
+    function calling is raised as ``StructuredOutputUnsupportedError``: there is
+    no silent substitution of another structured-output method.
     """
     import warnings
 
@@ -240,10 +248,22 @@ def build_structured_generator(
         use_responses_api=False,
     )
     with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        structured = llm.with_structured_output(
-            StructuredAnswer, method="json_schema", strict=True, include_raw=True
+        # Escalate only langchain-openai's json_schema → function_calling override
+        # (a UserWarning in langchain-openai 1.8.0); other warnings keep default handling.
+        warnings.filterwarnings(
+            "error",
+            message=_METHOD_OVERRIDE_WARNING,
+            category=UserWarning,
+            module=r"langchain_openai\.chat_models\.base",
         )
+        try:
+            structured = llm.with_structured_output(
+                StructuredAnswer, method="json_schema", strict=True, include_raw=True
+            )
+        except UserWarning as exc:
+            raise StructuredOutputUnsupportedError(
+                f"model {settings.llm_model!r} does not support native json_schema output"
+            ) from exc
 
     def generate(messages: list[BaseMessage]) -> Mapping[str, Any]:
         try:

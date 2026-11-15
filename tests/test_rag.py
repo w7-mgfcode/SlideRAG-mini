@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import warnings
 from pathlib import Path
 
 import chromadb
@@ -31,6 +32,7 @@ from app.rag import (
     ProviderError,
     RetrievedChunk,
     StructuredAnswer,
+    StructuredOutputUnsupportedError,
     add_chunks,
     build_embeddings,
     build_messages,
@@ -39,7 +41,7 @@ from app.rag import (
     open_store,
     retrieve,
 )
-from conftest import NETWORK_GUARD_SRC
+from conftest import NETWORK_GUARD_SRC, TEST_PLACEHOLDER_KEY
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TESTS_DIR = Path(__file__).resolve().parent
@@ -171,6 +173,22 @@ def test_build_clients_without_key_raise(make_settings) -> None:
     with pytest.raises(MissingCredentialsError):
         build_embeddings(settings)
     with pytest.raises(MissingCredentialsError):
+        build_structured_generator(settings)
+
+
+def test_build_structured_generator_supported_model_has_no_override(make_settings) -> None:
+    """Construction only (no invoke); the network guard fails any connection attempt."""
+    settings = make_settings(key=TEST_PLACEHOLDER_KEY, LLM_MODEL="gpt-4.1-mini")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        generate = build_structured_generator(settings)
+    assert callable(generate)
+    assert not [w for w in caught if "Cannot use method='json_schema'" in str(w.message)]
+
+
+def test_build_structured_generator_override_model_raises(make_settings) -> None:
+    settings = make_settings(key=TEST_PLACEHOLDER_KEY, LLM_MODEL="gpt-4")
+    with pytest.raises(StructuredOutputUnsupportedError):
         build_structured_generator(settings)
 
 
@@ -338,4 +356,4 @@ def test_stack_proof_live_incomplete_output_fails_closed(live_settings) -> None:
     generate = build_structured_generator(live_settings, max_tokens=5)
     result = generate_answer(generate, "Summarize every synthetic slide in detail.", _retrieved())
     assert result.status == "invalid"
-    assert result.detail in {"incomplete", "parse_error", "finish_reason_length"}
+    assert result.detail in {"incomplete", "finish_reason_length"}
