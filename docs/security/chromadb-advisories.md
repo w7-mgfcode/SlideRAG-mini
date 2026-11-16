@@ -23,10 +23,17 @@ alerts to make a check green.
   from HTTP requests or document text. The container starts only our FastAPI app.
 - Embeddings are computed by the explicitly injected application client. Stored
   embedding functions are not part of the supported index format.
-- `app/rag.py` validates `collection.configuration_json` directly. It must not
-  read `collection.configuration`, which constructs embedding functions in the
-  locked Chroma implementation. A non-null configuration other than the inert
-  `{"type": "legacy"}` marker is rejected before construction.
+- Chroma 1.5.9 stores embedding-function configs in two channels and builds them
+  when `collection.configuration` or `collection.schema` is read (the schema is
+  read on every upsert and on some query paths). Before that can happen,
+  `open_store` reads both channels raw: `collection.configuration_json` and the
+  library-private model field `collection._model.serialized_schema`. It walks
+  every nested `embedding_function` entry (dense and sparse, `defaults` and
+  `keys`) and accepts only absent, `null`, `{"type": "legacy"}` or
+  `{"type": "unknown"}`, which are the nameless markers Chroma writes for our
+  collection. Anything else, or a non-object document, raises
+  `IndexMismatchError`. The guard fails closed and only reads: it does not reset,
+  migrate or modify the collection.
 - A temporary or operator-owned `DATA_DIR` is required. Do not import untrusted
   Chroma databases, share a writable root with another process, or expose a Chroma
   server. Local filesystem write access is not made safe by the JSON guard.
@@ -35,12 +42,29 @@ alerts to make a check green.
 
 ## Verification and remaining work
 
-The offline regression
-`test_stored_embedding_configuration_is_rejected_without_deserialization`
-uses an inert collection double whose deserializing property fails if accessed.
-It verifies rejection without executing model code or contacting a provider.
-The existing fresh-process persistence test verifies the supported embedded
-path. Neither test is a penetration test or proof that Chroma itself is fixed.
+`test_open_store_schema_embedding_function_refused_before_construction` creates
+a real collection through `open_store`. It then stores a named function in the
+raw schema (dense `#embedding` key, dense `defaults`, sparse `defaults`) and
+reopens the collection in a fresh process with an inert spy registered under
+that name. It asserts the refusal, zero spy calls and unchanged rows and records.
+Against the previous configuration-only guard, the `defaults` cases fail, and
+the following upload builds the spy. An untampered reopen-and-upsert test guards
+against false positives. The double-based
+`test_stored_embedding_configuration_is_rejected_without_deserialization` covers
+the configuration channel.
+
+Remaining limits:
+
+- Both advisories are still unpatched upstream in 1.5.9. This is a mitigation,
+  not a fixed dependency.
+- The protection depends on the operator owning `DATA_DIR`.
+- Any future read of `.configuration` or `.schema`, or a call to
+  `similarity_search_with_relevance_scores` (LangChain reads `.configuration`),
+  that runs before this guard would bypass it.
+- The guard relies on a private model field. Other unknown deserialization paths
+  in Chroma are not covered by tests.
+- The spy tests prove that construction is refused, not resistance to a real
+  payload. They are not penetration tests.
 
 The package remains advisory-affected. Keep the alerts visible. Before deployment
 and each Chroma upgrade, re-check both advisories, the released fix status and

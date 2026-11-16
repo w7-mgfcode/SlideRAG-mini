@@ -211,6 +211,93 @@ def test_stored_embedding_configuration_is_rejected_without_deserialization(make
         _verify_collection(UntrustedCollection(), settings.index_config)
 
 
+SPY_EF = {"type": "known", "name": "sliderag_inert_spy", "config": {}}
+
+# Registers an inert spy (records calls, builds nothing) under SPY_EF's name in
+# Chroma's dense and sparse registries, then opens the tampered store in a fresh
+# process. If open_store is not refused, an upload runs to prove construction.
+SCHEMA_GUARD_CHILD = """
+import json
+from chromadb.utils import embedding_functions as registry
+from app.config import load_settings
+from app.rag import Chunk, IndexMismatchError, add_chunks, open_store
+from conftest import HashEmbeddings
+calls = []
+class InertSpy:
+    @classmethod
+    def build_from_config(cls, config):
+        calls.append(config)
+        raise RuntimeError("inert spy")
+registry.known_embedding_functions["sliderag_inert_spy"] = InertSpy
+registry.sparse_known_embedding_functions["sliderag_inert_spy"] = InertSpy
+try:
+    store = open_store(load_settings(), HashEmbeddings())
+except IndexMismatchError:
+    print(json.dumps({"refused": True, "calls": len(calls)}))
+else:
+    add_chunks(store, [Chunk("SYNTHETIC DEMO. probe.", "deck.pptx", 9, "b" * 64, 0)])
+    print(json.dumps({"refused": False, "calls": len(calls)}))
+"""
+
+
+def _read_collection_rows(data_dir: Path) -> list[tuple]:
+    import sqlite3
+
+    with sqlite3.connect(data_dir / "chroma" / "chroma.sqlite3") as db:
+        return db.execute(
+            "SELECT name, config_json_str, schema_str FROM collections ORDER BY name"
+        ).fetchall()
+
+
+def _tamper_schema(data_dir: Path, channel: str) -> None:
+    """Controlled raw edit: store a named embedding function in one schema channel."""
+    import sqlite3
+
+    with sqlite3.connect(data_dir / "chroma" / "chroma.sqlite3") as db:
+        (raw,) = db.execute(
+            "SELECT schema_str FROM collections WHERE name = ?", (COLLECTION_NAME,)
+        ).fetchone()
+        schema = json.loads(raw)
+        if channel == "dense-key":  # Chroma also mirrors this one into configuration_json
+            config = schema["keys"]["#embedding"]["float_list"]["vector_index"]["config"]
+        elif channel == "dense-default":
+            config = schema["defaults"]["float_list"]["vector_index"]["config"]
+        else:
+            config = schema["defaults"]["sparse_vector"]["sparse_vector_index"]["config"]
+        config["embedding_function"] = SPY_EF
+        db.execute(
+            "UPDATE collections SET schema_str = ? WHERE name = ?",
+            (json.dumps(schema), COLLECTION_NAME),
+        )
+
+
+@pytest.mark.parametrize("channel", ["dense-key", "dense-default", "sparse-default"])
+def test_open_store_schema_embedding_function_refused_before_construction(
+    data_dir: Path, channel: str
+) -> None:
+    written_ids = _run_child(WRITER, data_dir).strip().split(",")
+    _tamper_schema(data_dir, channel)
+    before = _read_collection_rows(data_dir)
+    # The stored configuration stays clean: only the schema carries the function.
+    assert json.loads(before[0][1]).get("embedding_function") is None
+
+    result = json.loads(_run_child(SCHEMA_GUARD_CHILD, data_dir))
+
+    assert result == {"refused": True, "calls": 0}
+    assert _read_collection_rows(data_dir) == before
+    reader = _chroma_client(data_dir).get_collection(COLLECTION_NAME, embedding_function=None)
+    assert reader.count() == len(written_ids)
+    assert sorted(reader.get(include=[])["ids"]) == sorted(written_ids)
+
+
+def test_open_store_untampered_reopen_accepts_and_upserts(data_dir: Path) -> None:
+    """No false positive: our own collection reopens and accepts an upload."""
+    _run_child(WRITER, data_dir)
+    result = json.loads(_run_child(SCHEMA_GUARD_CHILD, data_dir))
+    assert result == {"refused": False, "calls": 0}
+    assert _chroma_client(data_dir).get_collection(COLLECTION_NAME).count() == 3
+
+
 def test_retrieve_missing_metadata_raises(make_settings, fake_embeddings) -> None:
     store = open_store(make_settings(), fake_embeddings)
     store.add_texts(["SYNTHETIC orphan text"], metadatas=[{"source_file": "x.pptx"}], ids=["x"])

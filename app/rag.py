@@ -107,14 +107,46 @@ class RetrievedChunk:
 # ── Vector store ────────────────────────────────────────────────────────
 
 
+# Exact markers Chroma 1.5.9 writes for a collection created with
+# embedding_function=None: "legacy" (configuration and dense schema) and "unknown"
+# (sparse schema defaults). Neither carries a name, so every Chroma construction
+# site resolves them to None or fails its name lookup before building anything.
+_INERT_EMBEDDING_FUNCTIONS = (None, {"type": "legacy"}, {"type": "unknown"})
+
+
+def _reject_stored_embedding_functions(document: Any) -> None:
+    """Fail closed on any non-inert ``embedding_function`` entry, at any depth."""
+    if document is None:
+        return
+    if not isinstance(document, Mapping):
+        raise IndexMismatchError("persisted collection configuration has an unsupported shape")
+    pending: list[Any] = [document]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, Mapping):
+            for key, value in node.items():
+                if key == "embedding_function" and value not in _INERT_EMBEDDING_FUNCTIONS:
+                    logger.error("stored embedding function refused")
+                    raise IndexMismatchError("persisted embedding functions are not supported")
+                pending.append(value)
+        elif isinstance(node, list):
+            pending.extend(node)
+
+
 def _verify_collection(collection: Any, index_config: IndexConfig) -> None:
-    # Chroma's .configuration property constructs embedding functions from stored
-    # JSON. Inspect the raw public property instead, before any deserialization.
-    # Embeddings belong to our injected LangChain client, never to stored code.
-    configuration = collection.configuration_json or {}
-    embedding_config = configuration.get("embedding_function")
-    if embedding_config not in (None, {"type": "legacy"}):
-        raise IndexMismatchError("persisted embedding functions are not supported")
+    # Chroma's .configuration and .schema properties construct embedding functions
+    # from stored JSON (dense and sparse). Inspect only the raw JSON, before any
+    # deserialization: the public configuration_json passthrough and the raw
+    # CollectionModel field _model.serialized_schema (library-private, read only;
+    # re-verify on each Chroma upgrade). This guard reads and raises; it never
+    # mutates the collection. Embeddings come from our injected client only.
+    configuration = collection.configuration_json
+    _reject_stored_embedding_functions(configuration)
+    model = getattr(collection, "_model", None)
+    if model is None or not hasattr(model, "serialized_schema"):
+        raise IndexMismatchError("persisted collection schema is unavailable")
+    _reject_stored_embedding_functions(model.serialized_schema)
+    configuration = configuration or {}
     space = (configuration.get("hnsw") or {}).get("space")
     stored_id = (collection.metadata or {}).get("index_config_id")
     if space != index_config.distance or stored_id != index_config.fingerprint():
