@@ -46,6 +46,29 @@ CHUNKING_VERSION = "slide-split-1000-150-v1"
 COLLECTION_NAME = "sliderag_chunks"
 
 RETRIEVAL_K = 5
+# Optional distance threshold T (EXEC-01 § 5): refuse when best_distance > T; equality
+# passes. None disables the layer. Calibrate only on separate probes bound to this exact
+# index configuration, never on the five acceptance questions; not an environment setting.
+DISTANCE_THRESHOLD: float | None = None
+
+# Upload and content bounds (EXEC-01 § 6).
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MiB = 10,485,760 bytes
+MAX_REQUEST_BYTES = MAX_UPLOAD_BYTES + 64 * 1024  # whole multipart request
+MAX_FORM_REQUEST_BYTES = 16 * 1024  # question form
+MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024  # declared ZIP uncompressed total
+MAX_ZIP_MEMBERS = 2_000
+MAX_SLIDES = 200
+MAX_EXTRACTED_CHARS = 1_000_000
+MAX_FILENAME_CHARS = 120
+MAX_QUESTION_CHARS = 1_000
+
+# Chunking (EXEC-01 § 4 step 5); CHUNKING_VERSION names these values. MAX_CHUNK_CHARS is a
+# hard cap enforced by the chunker and again by rag.add_chunks, far below model limits.
+CHUNK_SIZE = 1_000
+CHUNK_OVERLAP = 150
+MAX_CHUNK_CHARS = CHUNK_SIZE
+
+MANIFEST_VERSION = 1
 
 
 class ConfigError(ValueError):
@@ -60,6 +83,8 @@ class DataPaths:
     uploads: Path
     chroma: Path
     manifest: Path
+    # Staging for in-flight uploads; never durable state (abandoned files may be removed).
+    tmp: Path
 
 
 @dataclass(frozen=True)
@@ -144,7 +169,12 @@ _HOST_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
 
 def _valid_hostname(host: str) -> bool:
-    """ASCII DNS name (RFC 1123 labels) or an IP literal. Non-ASCII hosts are refused."""
+    """ASCII DNS name (RFC 1123 labels) or an IP literal. Non-ASCII hosts are refused.
+
+    A host whose labels are all numeric must be a valid dotted IPv4 address: HTTP
+    clients parse such hosts as IPv4 and would otherwise fail later, at client
+    construction, instead of as a ``ConfigError`` (for example ``999.999.1.1``).
+    """
     if host.startswith("[") and host.endswith("]"):
         try:
             return ipaddress.ip_address(host[1:-1]).version == 6
@@ -152,7 +182,15 @@ def _valid_hostname(host: str) -> bool:
             return False
     if not host.isascii() or len(host) > 253:
         return False
-    return all(_HOST_LABEL.fullmatch(label) for label in host.split("."))
+    labels = host.split(".")
+    if not all(_HOST_LABEL.fullmatch(label) for label in labels):
+        return False
+    if all(label.isdigit() for label in labels):
+        try:
+            return len(labels) == 4 and ipaddress.ip_address(host).version == 4
+        except ValueError:
+            return False
+    return True
 
 
 def canonical_base_url(name: str, value: str | None) -> str | None:
@@ -209,6 +247,7 @@ def data_paths(root: Path) -> DataPaths:
         uploads=contained(root, "uploads"),
         chroma=contained(root, "chroma"),
         manifest=contained(root, "manifest.json"),
+        tmp=contained(root, "tmp"),
     )
 
 
