@@ -246,7 +246,9 @@ def build_embeddings(settings: Settings) -> Embeddings:
     return OpenAIEmbeddings(
         model=settings.embedding_model,
         api_key=_require_key(settings),
-        base_url=settings.embedding_base_url,
+        # Explicit effective endpoint, the one recorded in settings.index_config:
+        # OPENAI_API_BASE, OPENAI_BASE_URL and LANGSMITH_GATEWAY never override it.
+        base_url=settings.effective_embedding_base_url,
         dimensions=EMBEDDING_DIMENSIONS,
         timeout=OPENAI_TIMEOUT_SECONDS,
         max_retries=OPENAI_MAX_RETRIES,
@@ -274,6 +276,23 @@ class StructuredAnswer(BaseModel):
 StructuredGenerator = Callable[[list[BaseMessage]], Mapping[str, Any]]
 
 
+def build_chat_model(settings: Settings, *, max_tokens: int | None = None) -> Any:
+    """Chat client bound to the explicit effective chat endpoint (key required)."""
+    from langchain_openai import ChatOpenAI
+
+    return ChatOpenAI(
+        model=settings.llm_model,
+        api_key=_require_key(settings),
+        # Explicit: OPENAI_API_BASE, OPENAI_BASE_URL and LANGSMITH_GATEWAY never override it.
+        base_url=settings.effective_llm_base_url,
+        timeout=OPENAI_TIMEOUT_SECONDS,
+        max_retries=OPENAI_MAX_RETRIES,
+        temperature=0,
+        max_tokens=max_tokens,
+        use_responses_api=False,
+    )
+
+
 def build_structured_generator(
     settings: Settings, *, max_tokens: int | None = None
 ) -> StructuredGenerator:
@@ -285,18 +304,7 @@ def build_structured_generator(
     """
     import warnings
 
-    from langchain_openai import ChatOpenAI
-
-    llm = ChatOpenAI(
-        model=settings.llm_model,
-        api_key=_require_key(settings),
-        base_url=settings.llm_base_url,
-        timeout=OPENAI_TIMEOUT_SECONDS,
-        max_retries=OPENAI_MAX_RETRIES,
-        temperature=0,
-        max_tokens=max_tokens,
-        use_responses_api=False,
-    )
+    llm = build_chat_model(settings, max_tokens=max_tokens)
     with warnings.catch_warnings():
         # Escalate only langchain-openai's json_schema → function_calling override
         # (a UserWarning in langchain-openai 1.8.0); other warnings keep default handling.

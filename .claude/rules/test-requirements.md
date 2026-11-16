@@ -1,6 +1,6 @@
 # Test Requirements
 
-> Vision principle: **"Small, focused suite; correctness over tooling."** Every change runs ruff + pytest. Unit tests mock the OpenAI embedding and chat calls and need no network. Tests that need a real `OPENAI_API_KEY` carry `@pytest.mark.integration` and skip automatically when the key is absent.
+> Vision principle: **"Small, focused suite; correctness over tooling."** Every change runs ruff + pytest. Unit tests mock the OpenAI embedding and chat calls and need no network. Tests that need a real `OPENAI_API_KEY` carry `@pytest.mark.integration` and are skipped unless both the explicit `--run-live` option is given and the key is nonblank.
 
 ## What "tests" mean here
 
@@ -8,7 +8,7 @@
 |-------|-------|-----------------|
 | **Unit** | `tests/test_ingestion.py`, `tests/test_rag.py` | Deterministic logic: PPTX validation, extraction, chunking, metadata, citation validation, graph transitions. External calls mocked. Runs in seconds. |
 | **Routes** | `tests/test_main.py` | Happy/error responses, busy behavior, degraded state, upstream failures. External calls mocked. |
-| **Integration** | same files, marked `@pytest.mark.integration` | Real embedding + chat calls against the synthetic demo deck. Skipped without `OPENAI_API_KEY`. |
+| **Integration** | same files, marked `@pytest.mark.integration` | Real embedding + chat calls against the synthetic demo deck. Skipped unless `--run-live` is passed and `OPENAI_API_KEY` is nonblank. |
 | **Lint/format** | the whole tree | `ruff check` and `ruff format` clean. |
 
 `mypy` is welcome locally but is **not** a gate.
@@ -21,8 +21,8 @@ Run, in order (fast → slow):
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest -m "not integration"
-# only with OPENAI_API_KEY in the environment:
-uv run pytest -m integration
+# live checks: requires BOTH the explicit --run-live option and a nonblank OPENAI_API_KEY
+uv run pytest -m integration --run-live
 ```
 
 **Do not commit on red.**

@@ -47,5 +47,5 @@ testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "--strict-markers"
 markers = [
-    "integration: requires a real OPENAI_API_KEY and makes external API calls (skipped without it)",
+    "integration: live external API calls; run only with --run-live and a nonblank OPENAI_API_KEY (uv run pytest -m integration --run-live), skipped otherwise",
 ]

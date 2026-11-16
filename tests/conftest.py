@@ -54,11 +54,39 @@ class HashEmbeddings(Embeddings):
         return self._embed(text)
 
 
+RUN_LIVE_OPTION = "--run-live"
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        RUN_LIVE_OPTION,
+        action="store_true",
+        default=False,
+        help=(
+            "Run @pytest.mark.integration live provider checks. Also requires a nonblank "
+            "OPENAI_API_KEY; otherwise they are skipped. "
+            "Usage: uv run pytest -m integration --run-live"
+        ),
+    )
+
+
+def live_skip_reason(run_live: bool, api_key: str | None) -> str | None:
+    """Why integration tests are skipped, or None when the live opt-in is complete."""
+    if not run_live:
+        return f"integration: live checks need explicit {RUN_LIVE_OPTION} (deferred)"
+    if not (api_key or "").strip():
+        return "integration: OPENAI_API_KEY not set or blank (live check deferred)"
+    return None
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    # Presence check only; the value is never read into test output.
-    if os.environ.get("OPENAI_API_KEY"):
+    # Presence check only; the key value is never written to test output.
+    reason = live_skip_reason(
+        bool(config.getoption(RUN_LIVE_OPTION)), os.environ.get("OPENAI_API_KEY")
+    )
+    if reason is None:
         return
-    skip = pytest.mark.skip(reason="integration: OPENAI_API_KEY not set (live check deferred)")
+    skip = pytest.mark.skip(reason=reason)
     for item in items:
         if "integration" in item.keywords:
             item.add_marker(skip)
