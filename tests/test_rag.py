@@ -203,6 +203,51 @@ def test_open_store_index_config_mismatch_raises(
     assert client.get_collection(COLLECTION_NAME).count() == 1
 
 
+def test_open_store_refuses_previous_schema_version_index_without_mutation(
+    make_settings, fake_embeddings, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #20: a real version-1 index (possibly ambient-endpoint vectors) is refused, unchanged."""
+    import app.config
+
+    current_version = app.config.INDEX_SCHEMA_VERSION
+    assert current_version >= 2
+    with monkeypatch.context() as patch:
+        patch.setattr(app.config, "INDEX_SCHEMA_VERSION", 1)
+        old_config = make_settings().index_config
+        add_chunks(open_store(make_settings(), fake_embeddings), SYNTHETIC_CHUNKS)
+
+    def snapshot() -> tuple[object, ...]:
+        collection = _chroma_client(data_dir).get_collection(COLLECTION_NAME)
+        rows = collection.get(include=["documents", "metadatas", "embeddings"])
+        return (
+            dict(collection.metadata or {}),
+            collection.count(),
+            rows["ids"],
+            rows["documents"],
+            rows["metadatas"],
+            [list(e) for e in rows["embeddings"]],
+        )
+
+    before = snapshot()
+    assert before[0] == {
+        "index_config_id": old_config.fingerprint(),
+        "index_schema_version": 1,
+    }
+    assert before[1] == len(SYNTHETIC_CHUNKS)
+    assert before[2] == [c.chunk_id for c in SYNTHETIC_CHUNKS]
+
+    current = make_settings().index_config
+    assert current.schema_version == current_version
+    assert current.fingerprint() != old_config.fingerprint()
+    # Same endpoint and model: only the version boundary separates the two.
+    assert current.embedding_endpoint == old_config.embedding_endpoint
+    with pytest.raises(IndexMismatchError):
+        open_store(make_settings(), fake_embeddings)
+
+    assert snapshot() == before
+    assert [c.name for c in _chroma_client(data_dir).list_collections()] == [COLLECTION_NAME]
+
+
 def test_open_store_foreign_collection_refuses_without_mutation(
     make_settings, fake_embeddings, data_dir: Path
 ) -> None:
@@ -516,6 +561,29 @@ def test_clients_use_effective_endpoints_despite_ambient_overrides(
         assert expected_embed == expected_chat == "https://api.openai.com/v1"
 
 
+def test_equivalent_endpoints_give_identical_client_base_urls(make_settings) -> None:
+    """Canonical endpoint string is what the clients receive and what the index records."""
+    plain = make_settings(
+        key=TEST_PLACEHOLDER_KEY,
+        LLM_BASE_URL="https://chat.example.invalid/v1",
+        EMBEDDING_BASE_URL="https://embed.example.invalid/TeamA/v1",
+    )
+    variant = make_settings(
+        key=TEST_PLACEHOLDER_KEY,
+        LLM_BASE_URL="HTTPS://Chat.Example.Invalid:443/v1/",
+        EMBEDDING_BASE_URL="https://EMBED.example.invalid:443/TeamA/v1/",
+    )
+    for settings in (plain, variant):
+        embeddings = build_embeddings(settings)
+        chat = build_chat_model(settings)
+        assert embeddings.openai_api_base == "https://embed.example.invalid/TeamA/v1"
+        assert str(embeddings.client._client.base_url).rstrip("/") == embeddings.openai_api_base
+        assert chat.openai_api_base == "https://chat.example.invalid/v1"
+        assert str(chat.root_client.base_url).rstrip("/") == chat.openai_api_base
+        assert settings.index_config.embedding_endpoint == embeddings.openai_api_base
+    assert variant.index_config.fingerprint() == plain.index_config.fingerprint()
+
+
 @pytest.mark.parametrize(
     ("run_live", "api_key", "skipped"),
     [
@@ -535,11 +603,33 @@ def test_live_skip_reason_requires_option_and_nonblank_key(
         assert "sk-fake" not in reason
 
 
-@pytest.mark.parametrize("extra_args", [[], ["-m", "integration"]])
-def test_live_checks_skip_without_option_even_with_key(data_dir: Path, extra_args) -> None:
-    """Comment 10: a present (fake) key alone never enables live tests."""
-    env = {k: v for k, v in os.environ.items() if k != "OPENAI_API_KEY"}
-    env["OPENAI_API_KEY"] = "sk-fake-for-skip-test"
+@pytest.mark.parametrize(
+    ("extra_args", "child_key", "expected_reason"),
+    [
+        ([], "sk-fake-for-skip-test", "live checks need explicit --run-live"),
+        (["-m", "integration"], "sk-fake-for-skip-test", "live checks need explicit --run-live"),
+        # Deliberate opt-in reaches the child (reason changes), keyless so nothing runs.
+        (["-m", "integration", "--run-live"], None, "OPENAI_API_KEY not set or blank"),
+    ],
+)
+def test_live_checks_skip_without_option_even_with_key(
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    extra_args: list[str],
+    child_key: str | None,
+    expected_reason: str,
+) -> None:
+    """Comment 10 / PR #20: a fake key and an inherited PYTEST_ADDOPTS never enable live tests."""
+    # Parent environment that would opt in if it leaked into the nested pytest.
+    monkeypatch.setenv("PYTEST_ADDOPTS", "--run-live")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake-for-skip-test")
+    # The nested run's options come only from its argument list: drop every
+    # pytest-affecting variable (PYTEST_ADDOPTS, PYTEST_PLUGINS, ...) and the key.
+    env = {
+        k: v for k, v in os.environ.items() if not k.startswith("PYTEST_") and k != "OPENAI_API_KEY"
+    }
+    if child_key is not None:
+        env["OPENAI_API_KEY"] = child_key
     env["DATA_DIR"] = str(data_dir)
     script = NETWORK_GUARD_SRC + textwrap.dedent(
         f"""
@@ -562,7 +652,8 @@ def test_live_checks_skip_without_option_even_with_key(data_dir: Path, extra_arg
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "3 skipped" in completed.stdout
     assert "passed" not in completed.stdout and "failed" not in completed.stdout
-    assert "live checks need explicit --run-live" in completed.stdout
+    assert "network access blocked" not in completed.stdout + completed.stderr
+    assert expected_reason in completed.stdout
 
 
 # ── Deferred live checks (stack-proof). Never run without explicit authorization. ──
