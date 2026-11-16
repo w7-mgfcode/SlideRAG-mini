@@ -98,8 +98,8 @@ Consequences to know before the demo:
 | 200 | Page, answer, refusal (fallback) or successful/duplicate upload |
 | 400 | Malformed form, invalid PPTX, no extractable text, bad question length |
 | 409 | Busy: another upload or retrieval holds the lock; retry |
-| 413 | Upload, archive or text over a limit |
-| 415 | Not a `.pptx` file, or not `multipart/form-data` |
+| 413 | Upload, archive or text over a limit, or a question form over its 16 KiB request cap |
+| 415 | Not a `.pptx` file, an upload that is not `multipart/form-data`, or a question form with another content type |
 | 500 | Upload storage failure that was rolled back; retry |
 | 502 | The model provider failed or timed out (not a refusal) |
 | 503 | Degraded: missing key, provider client unusable, or inconsistent/unavailable data root |

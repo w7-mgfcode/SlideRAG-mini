@@ -53,7 +53,9 @@ Do this once per new, empty volume. A failed, ambiguous or surprising probe is
    blank_volume() {
      : "${EXPECTED_VOL:?set EXPECTED_VOL}" "${DEV:?set DEV}"
      [ "$(lsblk -dno SERIAL "$DEV")" = "${EXPECTED_VOL/-/}" ] || { echo "serial mismatch"; return 1; }
-     [ -z "$(lsblk -no MOUNTPOINTS "$DEV" | tr -d '[:space:]')" ] || { echo "mounted"; return 1; }
+     local mp
+     mp=$(lsblk -no MOUNTPOINTS "$DEV") || { echo "mount probe failed"; return 1; }
+     [ -z "$(printf '%s' "$mp" | tr -d '[:space:]')" ] || { echo "mounted"; return 1; }
      [ "$(lsblk -no NAME "$DEV" | wc -l)" -eq 1 ] || { echo "has partitions"; return 1; }
      sudo blkid -p "$DEV" >/dev/null 2>&1
      [ $? -eq 2 ] || { echo "blkid did not report 'nothing found' (exit 2)"; return 1; }
@@ -74,23 +76,53 @@ Do this once per new, empty volume. A failed, ambiguous or surprising probe is
    if blank_volume; then sudo mkfs.ext4 -L sliderag-data "$DEV"; else echo "STOP: not formatted"; fi
    ```
 
-5. Prepare the mountpoint, add the fstab entry once and mount by UUID. Existing
-   fstab entries are kept; on a rerun nothing is appended.
+5. Prepare the mountpoint, add the fstab entry once and mount by UUID. The step
+   re-checks the volume and does nothing unless the device carries a filesystem
+   UUID. That covers a new shell where `DEV` is unset, and a STOP in step 4. An
+   existing `/data` entry is kept only if it is exactly `UUID=<this volume's UUID>`;
+   anything else stops for a manual fstab fix, so a broken line is never kept.
 
    ```bash
-   UUID=$(sudo blkid -s UUID -o value "$DEV"); echo "UUID=$UUID"
-   sudo cp -n /etc/fstab /etc/fstab.pre-sliderag            # first backup only, never overwritten
-   sudo mkdir -p /data
-   # While /data is NOT mounted, make the bare mountpoint immutable: nothing can then
-   # write to the root disk through it if the volume is ever missing.
-   if mountpoint -q /data; then echo "already mounted: skip chattr"; else sudo chattr +i /data; fi
-   if grep -qsE '^[^#]*[[:space:]]/data[[:space:]]' /etc/fstab; then
-     echo "fstab already has a /data entry: keep it, do not add another"
-   else
-     echo "UUID=$UUID /data ext4 defaults,nofail,x-systemd.device-timeout=30s 0 2" | sudo tee -a /etc/fstab
-   fi
-   sudo systemctl daemon-reload && sudo mount /data && findmnt /data
+   setup_data_mount() {
+     : "${DEV:?set DEV}" "${EXPECTED_VOL:?set EXPECTED_VOL}"
+     [ "$(lsblk -dno SERIAL "$DEV")" = "${EXPECTED_VOL/-/}" ] || { echo "STOP: serial mismatch"; return 1; }
+     local uuid entry
+     uuid=$(sudo blkid -s UUID -o value "$DEV") || uuid=""
+     [ -n "$uuid" ] || { echo "STOP: no filesystem UUID on $DEV (was step 4 a STOP?)"; return 1; }
+     echo "volume UUID=$uuid"
+     entry=$(grep -sE '^[^#]*[[:space:]]/data[[:space:]]' /etc/fstab)
+     if [ -n "$entry" ]; then
+       echo "existing /data fstab entry: $entry"
+       if [ "$(printf '%s\n' "$entry" | wc -l)" -ne 1 ] \
+         || [ "$(printf '%s\n' "$entry" | awk '{print $1}')" != "UUID=$uuid" ]; then
+         echo "STOP: existing /data entry does not match UUID=$uuid; fix /etc/fstab by hand"
+         return 1
+       fi
+     fi
+     if mountpoint -q /data && [ "$(findmnt -no UUID /data)" != "$uuid" ]; then
+       echo "STOP: /data is mounted from another filesystem"; return 1
+     fi
+     [ -e /etc/fstab.pre-sliderag ] || sudo cp -p /etc/fstab /etc/fstab.pre-sliderag || return 1
+     sudo mkdir -p /data || return 1
+     # While /data is NOT mounted, make the bare mountpoint immutable: nothing can then
+     # write to the root disk through it if the volume is ever missing.
+     if ! mountpoint -q /data; then sudo chattr +i /data || return 1; fi
+     if [ -z "$entry" ]; then
+       echo "UUID=$uuid /data ext4 defaults,nofail,x-systemd.device-timeout=30s 0 2" \
+         | sudo tee -a /etc/fstab >/dev/null || return 1
+     fi
+     sudo systemctl daemon-reload || return 1
+     mountpoint -q /data || sudo mount /data || return 1
+     findmnt /data
+   }
+   setup_data_mount || echo "STOP: /data was not configured"
    ```
+
+   Maintaining the immutable mountpoint: while the volume is mounted,
+   `lsattr -d /data` shows the attributes of the volume's root directory, not of
+   the bare mountpoint. To change the bare directory itself (for example to
+   remove it), unmount `/data` first, then run `sudo chattr -i /data`. Mounting
+   over an immutable directory works normally.
 
    `nofail` keeps the instance bootable (and reachable over SSH) if the volume is
    missing. The Docker dependency in section B stops the application in that case.
@@ -117,6 +149,18 @@ printf '[Unit]\nRequiresMountsFor=/data\n' | sudo tee /etc/systemd/system/docker
 sudo systemctl daemon-reload
 systemctl show docker.service -p Requires -p After | grep -o 'data.mount' | sort -u   # expect: data.mount
 ```
+
+Side effects of this dependency on the whole host:
+
+- Starting Docker also mounts `/data`. That includes socket activation by any
+  `docker` CLI call through `docker.socket`.
+- Unmounting `/data`, even with a manual `umount`, makes systemd stop
+  `docker.service` and with it **every** container on the host.
+- A missing or failed volume blocks every container on the host, not only
+  SlideRAG. This host is dedicated to the demo, so that is intended.
+- That is why the `mount-boot-safety` steps stop both `docker.socket` and
+  `docker.service` before unmounting: otherwise the next `docker` command would
+  start Docker again and remount `/data` in the middle of the check.
 
 The layers are: the `RequiresMountsFor` drop-in, the immutable bare mountpoint,
 `--mount type=bind` (no auto-created source), and the `mountpoint -q /data`
@@ -156,8 +200,8 @@ sudo docker image inspect -f '{{.Id}}' "sliderag-mini:$TAG"
 ```bash
 TAG="<release tag>"
 APP_ROOT="/data/sliderag"        # the active root; recovery changes this
-sudo docker rm -f sliderag 2>/dev/null   # recreate: removes the container only, never data
 if mountpoint -q /data && [ -d "$APP_ROOT" ]; then
+  sudo docker rm -f sliderag 2>/dev/null   # recreate: removes the container only, never data
   sudo docker run -d --name sliderag --restart unless-stopped \
     -p 127.0.0.1:8000:8000 \
     --env-file /etc/sliderag/sliderag.env \
