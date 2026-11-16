@@ -14,15 +14,16 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
+import time
 import zipfile
 from pathlib import Path
 
-import chromadb
 import pytest
-from chromadb.config import Settings as ChromaSettings
 
+import app.config
 from app import ingestion
-from app.config import CHUNK_OVERLAP, CHUNK_SIZE, COLLECTION_NAME, MAX_CHUNK_CHARS
+from app.config import CHUNK_OVERLAP, CHUNK_SIZE, MAX_CHUNK_CHARS
 from app.ingestion import (
     BusyError,
     DegradedError,
@@ -37,7 +38,16 @@ from app.ingestion import (
     stage_upload,
 )
 from app.rag import ProviderError, validate_provenance
-from conftest import NETWORK_GUARD_SRC, TEST_PLACEHOLDER_KEY, HashEmbeddings, make_pptx
+from conftest import (
+    NETWORK_GUARD_SRC,
+    TEST_PLACEHOLDER_KEY,
+    HashEmbeddings,
+    durable_state,
+    ingest,
+    make_pptx,
+    stored_ids,
+)
+from conftest import corrupt_root as _corrupt
 from demo.generate_pptx import BANNER, NOTES_MARKER
 
 SHA = "b" * 64
@@ -48,33 +58,6 @@ def root(make_settings, fake_embeddings):
     opened = open_data_root(make_settings(key=TEST_PLACEHOLDER_KEY), fake_embeddings)
     assert opened.degraded == []
     return opened
-
-
-def ingest(root, path: Path, filename: str | None = None):
-    with path.open("rb") as handle, exclusive(root):
-        staged = stage_upload(handle, root.settings)
-        try:
-            return ingest_staged(root, staged, filename or path.name)
-        finally:
-            staged.discard()
-
-
-def stored_ids(data_dir: Path) -> list[str]:
-    client = chromadb.PersistentClient(
-        path=str(data_dir / "chroma"), settings=ChromaSettings(anonymized_telemetry=False)
-    )
-    return sorted(client.get_collection(COLLECTION_NAME).get(include=[])["ids"])
-
-
-def durable_state(data_dir: Path) -> tuple[object, ...]:
-    manifest = data_dir / "manifest.json"
-    uploads = data_dir / "uploads"
-    files = (
-        sorted((p.name, hashlib.sha256(p.read_bytes()).hexdigest()) for p in uploads.iterdir())
-        if uploads.is_dir()
-        else []
-    )
-    return (manifest.read_bytes() if manifest.exists() else None, files, stored_ids(data_dir))
 
 
 def manifest_documents(data_dir: Path) -> list[dict]:
@@ -564,35 +547,6 @@ def test_unlistable_lost_and_found_root_is_initialised(
     assert opened.degraded == []
 
 
-def _corrupt(data_dir: Path, record_sha: str, case: str) -> None:
-    manifest = data_dir / "manifest.json"
-    if case == "manifest_missing":
-        manifest.unlink()
-    elif case == "manifest_corrupt":
-        manifest.write_text("{not json")
-    elif case == "manifest_record_corrupt":
-        data = json.loads(manifest.read_text())
-        data["documents"][0]["slide_number_typo"] = 1
-        manifest.write_text(json.dumps(data))
-    elif case == "manifest_version_unknown":
-        data = json.loads(manifest.read_text())
-        data["manifest_version"] = 99
-        manifest.write_text(json.dumps(data))
-    elif case == "upload_missing":
-        (data_dir / "uploads" / f"{record_sha}.pptx").unlink()
-    elif case == "unexplained_uploads":
-        (data_dir / "uploads" / ("c" * 64 + ".pptx")).write_bytes(b"PK")
-    elif case in ("chunks_missing", "unexplained_chunks"):
-        client = chromadb.PersistentClient(
-            path=str(data_dir / "chroma"), settings=ChromaSettings(anonymized_telemetry=False)
-        )
-        collection = client.get_collection(COLLECTION_NAME, embedding_function=None)
-        if case == "chunks_missing":
-            collection.delete(ids=[collection.get(include=[])["ids"][0]])
-        else:
-            collection.add(ids=["stray"], embeddings=[[0.1] * 1536], documents=["SYNTHETIC"])
-
-
 @pytest.mark.parametrize(
     ("case", "reason"),
     [
@@ -639,3 +593,243 @@ def test_unavailable_root_degrades(make_settings, fake_embeddings, tmp_path: Pat
     opened = open_data_root(settings, fake_embeddings)
     assert opened.degraded == ["data_root_unavailable"]
     assert blocker.read_text() == "file in the way"
+
+
+# ── #13: concurrency against the real lock (real threads, temp Chroma) ──
+
+
+def test_concurrent_reader_thread_never_observes_partial_ingest(
+    root, demo_deck: Path, data_dir, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ingest pauses after its chunks are upserted and the upload renamed, but
+    before the manifest commit: the riskiest window. A reader thread racing it sees
+    only Busy; afterwards it sees the complete document."""
+    paused, resume = threading.Event(), threading.Event()
+    real_write = ingestion.write_manifest
+
+    def paused_write(settings, documents):
+        paused.set()
+        assert resume.wait(10)
+        real_write(settings, documents)
+
+    monkeypatch.setattr(ingestion, "write_manifest", paused_write)
+    outcome: dict[str, object] = {}
+    writer = threading.Thread(target=lambda: outcome.setdefault("o", ingest(root, demo_deck)))
+    during: list[object] = []
+    stop = threading.Event()
+
+    def reader() -> None:
+        while not stop.is_set():
+            try:
+                during.append(retrieve_snapshot(root, "What was the peak latency during INC-042?"))
+            except BusyError:
+                during.append("busy")
+
+    reader_thread = threading.Thread(target=reader)
+    writer.start()
+    try:
+        assert paused.wait(10)
+        assert stored_ids(data_dir)  # the partial state really exists on disk right now
+        reader_thread.start()
+        deadline = time.monotonic() + 5
+        while len(during) < 25 and time.monotonic() < deadline:
+            time.sleep(0.001)
+    finally:
+        # Always release and join both threads, even when an assertion above fails.
+        stop.set()
+        if reader_thread.is_alive():
+            reader_thread.join(10)
+        resume.set()
+        writer.join(10)
+    assert not reader_thread.is_alive() and not writer.is_alive()
+
+    assert len(during) >= 25 and set(map(str, during)) == {"busy"}
+    record = outcome["o"].record
+    after = retrieve_snapshot(root, "What was the peak latency during INC-042?")
+    assert after and {h.chunk.file_sha256 for h in after} == {record.file_sha256}
+
+
+# ── #13: forced failure at each ingest stage ───────────────────────────
+
+
+class _FailAfterFirstRead(io.BytesIO):
+    def read(self, size: int = -1) -> bytes:
+        if self.tell() > 0:
+            raise OSError("injected staging read failure")
+        return super().read(size)
+
+
+@pytest.mark.parametrize("stage", ["staging", "extraction", "upsert", "rename"])
+def test_forced_failure_at_each_ingest_stage_leaves_nothing_and_retry_succeeds(
+    root, demo_deck: Path, data_dir, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    """Embedding and manifest-write failures are covered by
+    test_provider_failure_during_indexing_leaves_nothing_and_retry_succeeds and
+    test_failure_after_chunks_written_is_rolled_back; failed cleanup by
+    test_failed_cleanup_degrades_and_preserves_data."""
+    if stage == "rename" and os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    before = durable_state(data_dir)
+    wrote_chunks: list[bool] = []
+    with monkeypatch.context() as patch:
+        if stage == "staging":
+            with exclusive(root), pytest.raises(OSError, match="injected"):
+                stage_upload(_FailAfterFirstRead(demo_deck.read_bytes()), root.settings)
+        else:
+            if stage == "extraction":
+
+                def failing_extract(path):
+                    raise RuntimeError("injected extraction failure")
+
+                patch.setattr(ingestion, "extract_slides", failing_extract)
+            elif stage == "upsert":
+                real_add = ingestion.add_chunks
+
+                def add_then_fail(store, chunks):
+                    real_add(store, chunks)
+                    wrote_chunks.append(bool(stored_ids(data_dir)))
+                    raise RuntimeError("injected failure after upsert")
+
+                patch.setattr(ingestion, "add_chunks", add_then_fail)
+            else:
+                (data_dir / "uploads").chmod(0o500)  # the rename into uploads/ fails
+            try:
+                with pytest.raises((OSError, RuntimeError)):
+                    ingest(root, demo_deck)
+            finally:
+                (data_dir / "uploads").chmod(0o755)
+    if stage == "upsert":
+        assert wrote_chunks == [True]  # the failure really came after a write
+    assert durable_state(data_dir) == before  # no chunks, upload or record kept
+    assert list((data_dir / "tmp").iterdir()) == []
+    assert root.degraded == [] and root.documents == {}
+    outcome = ingest(root, demo_deck)
+    assert outcome.duplicate is False
+    assert stored_ids(data_dir) == sorted(outcome.record.chunk_ids)
+
+
+# ── #13: full index-configuration comparison, field by field ───────────
+
+
+@pytest.mark.parametrize(
+    ("field", "env", "constant"),
+    [
+        ("embedding_model", {"EMBEDDING_MODEL": "text-embedding-3-large"}, None),
+        ("embedding_endpoint", {"EMBEDDING_BASE_URL": "https://embed.example.invalid/v1"}, None),
+        ("embedding_dimensions", {}, ("EMBEDDING_DIMENSIONS", 512)),
+        ("distance", {}, ("DISTANCE_METRIC", "l2")),
+        ("extractor_version", {}, ("EXTRACTOR_VERSION", "pptx-text-v2")),
+        ("chunking_version", {}, ("CHUNKING_VERSION", "slide-split-800-100-v2")),
+        ("schema_version", {}, ("INDEX_SCHEMA_VERSION", 99)),
+    ],
+)
+def test_each_index_config_field_mismatch_degrades_without_mutation(
+    root,
+    demo_deck: Path,
+    data_dir,
+    make_settings,
+    fake_embeddings,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    env: dict,
+    constant,
+) -> None:
+    ingest(root, demo_deck)
+    original = root.settings.index_config
+    before = durable_state(data_dir)
+    if constant:
+        monkeypatch.setattr(app.config, *constant)
+    settings = make_settings(key=TEST_PLACEHOLDER_KEY, **env)
+    assert getattr(settings.index_config, field) != getattr(original, field)
+    reopened = open_data_root(settings, fake_embeddings)
+    assert reopened.degraded == ["index_config_mismatch"]
+    assert durable_state(data_dir) == before
+
+
+def test_collection_identity_is_checked_even_when_manifest_matches(
+    root, demo_deck: Path, data_dir, make_settings, fake_embeddings
+) -> None:
+    """A manifest edited to the new configuration cannot bless an old vector space."""
+    ingest(root, demo_deck)
+    other = make_settings(key=TEST_PLACEHOLDER_KEY, EMBEDDING_MODEL="text-embedding-3-large")
+    manifest = data_dir / "manifest.json"
+    data = json.loads(manifest.read_text())
+    data["index_config"] = other.index_config.as_dict()
+    data["index_config_id"] = other.index_config.fingerprint()
+    manifest.write_text(json.dumps(data))
+    before = durable_state(data_dir)
+    reopened = open_data_root(other, fake_embeddings)
+    assert reopened.degraded == ["index_config_mismatch"]
+    assert durable_state(data_dir) == before
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_permission_denied_root_degrades_and_preserves_data(
+    root, demo_deck: Path, data_dir, make_settings, fake_embeddings
+) -> None:
+    ingest(root, demo_deck)
+    before = durable_state(data_dir)
+    data_dir.chmod(0o500)
+    try:
+        reopened = open_data_root(make_settings(key=TEST_PLACEHOLDER_KEY), fake_embeddings)
+    finally:
+        data_dir.chmod(0o755)
+    assert reopened.degraded == ["data_root_unavailable"]
+    assert reopened.store is None
+    assert durable_state(data_dir) == before
+
+
+# ── #13 / QG-08: the real limits (no monkeypatched constants) ──────────
+
+
+def _deck_members(deck: Path) -> list[tuple[str, bytes]]:
+    with zipfile.ZipFile(deck) as archive:
+        return [(i.filename, archive.read(i)) for i in archive.infolist()]
+
+
+def _expansion_bomb(tmp_path: Path, deck: Path) -> Path:
+    """Valid deck plus a member that deflates 101 MiB of zeros into ~100 KB."""
+    path = tmp_path / "bomb.pptx"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, data in _deck_members(deck):
+            archive.writestr(name, data)
+        with archive.open("ppt/media/zeros.bin", "w") as member:
+            block = bytes(1024 * 1024)
+            for _ in range(101):
+                member.write(block)
+    return path
+
+
+def _too_many_members(tmp_path: Path, deck: Path) -> Path:
+    members = _deck_members(deck)
+    extra = [(f"ppt/extra/{i}.bin", b"") for i in range(2_001 - len(members))]
+    return _deck_with(tmp_path, [*members, *extra])
+
+
+def _too_many_slides(tmp_path: Path, deck: Path) -> Path:
+    members = _deck_members(deck)
+    extra = [(f"ppt/slides/slide{n}.xml", b"") for n in range(11, 202)]  # 201 slide parts
+    return _deck_with(tmp_path, [*members, *extra])
+
+
+@pytest.mark.parametrize(
+    ("builder", "code"),
+    [
+        (_expansion_bomb, "archive_too_large"),
+        (_too_many_members, "archive_limits"),
+        (_too_many_slides, "archive_limits"),
+    ],
+    ids=["zip-expansion-101MiB", "2001-members", "201-slides"],
+)
+def test_real_archive_limits_reject_without_state(
+    root, demo_deck: Path, tmp_path: Path, data_dir, fake_embeddings, builder, code: str
+) -> None:
+    path = builder(tmp_path, demo_deck)
+    assert path.stat().st_size < ingestion.MAX_UPLOAD_BYTES  # passes the file cap
+    before = durable_state(data_dir)
+    with pytest.raises(UploadRejected) as rejected:
+        ingest(root, path)
+    assert rejected.value.code == code
+    assert durable_state(data_dir) == before
+    assert list((data_dir / "tmp").iterdir()) == []
+    assert fake_embeddings.document_calls == 0
