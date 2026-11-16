@@ -84,6 +84,16 @@ class Settings:
         return bool(self.openai_api_key)
 
     @property
+    def effective_llm_base_url(self) -> str:
+        """Chat endpoint every client uses: the configured value or the explicit default."""
+        return self.llm_base_url or DEFAULT_OPENAI_BASE_URL
+
+    @property
+    def effective_embedding_base_url(self) -> str:
+        """Embedding endpoint used for requests and recorded in the index identity."""
+        return self.embedding_base_url or DEFAULT_OPENAI_BASE_URL
+
+    @property
     def paths(self) -> DataPaths:
         return data_paths(self.data_dir)
 
@@ -92,7 +102,7 @@ class Settings:
         return IndexConfig(
             schema_version=INDEX_SCHEMA_VERSION,
             embedding_model=self.embedding_model,
-            embedding_endpoint=endpoint_identity(self.embedding_base_url),
+            embedding_endpoint=endpoint_identity(self.effective_embedding_base_url),
             embedding_dimensions=EMBEDDING_DIMENSIONS,
             distance=DISTANCE_METRIC,
             extractor_version=EXTRACTOR_VERSION,
@@ -108,11 +118,18 @@ def _clean(value: str | None) -> str | None:
 
 
 def _validate_base_url(name: str, value: str | None) -> str | None:
+    """Accept only a credential-free ``https`` URL with a host and a valid port."""
     if value is None:
         return None
-    parts = urlsplit(value)
-    if parts.scheme not in {"http", "https"} or not parts.hostname:
-        raise ConfigError(f"{name} must be an http(s) URL with a host")
+    try:
+        parts = urlsplit(value)
+        port = parts.port  # raises ValueError for a non-numeric or out-of-range port
+    except ValueError:
+        raise ConfigError(f"{name} is not a valid URL") from None
+    if parts.scheme.lower() != "https" or not parts.hostname:
+        raise ConfigError(f"{name} must be an https URL with a host")
+    if port == 0:
+        raise ConfigError(f"{name} has an invalid port")
     if parts.username is not None or parts.password is not None:
         raise ConfigError(f"{name} must not embed credentials")
     if parts.query or parts.fragment:
@@ -120,9 +137,9 @@ def _validate_base_url(name: str, value: str | None) -> str | None:
     return value.rstrip("/")
 
 
-def endpoint_identity(base_url: str | None) -> str:
-    """Non-secret endpoint identity recorded in the index configuration."""
-    parts = urlsplit(base_url or DEFAULT_OPENAI_BASE_URL)
+def endpoint_identity(base_url: str) -> str:
+    """Non-secret identity of an effective endpoint, recorded in the index configuration."""
+    parts = urlsplit(base_url)
     # Scheme/host are case-insensitive; a path may identify a different backend
     # when its case changes. Config validation already excludes URL credentials.
     return parts._replace(

@@ -35,6 +35,7 @@ from app.rag import (
     StructuredOutputUnsupportedError,
     _verify_collection,
     add_chunks,
+    build_chat_model,
     build_embeddings,
     build_messages,
     build_structured_generator,
@@ -42,7 +43,7 @@ from app.rag import (
     open_store,
     retrieve,
 )
-from conftest import NETWORK_GUARD_SRC, TEST_PLACEHOLDER_KEY
+from conftest import NETWORK_GUARD_SRC, TEST_PLACEHOLDER_KEY, live_skip_reason
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TESTS_DIR = Path(__file__).resolve().parent
@@ -103,6 +104,18 @@ store = open_store(load_settings(), HashEmbeddings())
 print(",".join(add_chunks(store, chunks)))
 """
 
+# Appended by a later process, after WRITER's chunks (QG-04 ranking, comment 14).
+LATE_WRITER = """
+from app.config import load_settings
+from app.rag import Chunk, add_chunks, open_store
+from conftest import HashEmbeddings
+late = Chunk(
+    "SYNTHETIC DEMO. Troubleshooting: check transport backhaul before radio tuning.",
+    "deck.pptx", 7, "a" * 64, 2,
+)
+print(",".join(add_chunks(open_store(load_settings(), HashEmbeddings()), [late])))
+"""
+
 READER = """
 import json
 import chromadb
@@ -113,6 +126,8 @@ from conftest import HashEmbeddings
 settings = load_settings()
 store = open_store(settings, HashEmbeddings())
 hits = retrieve(store, "What was the peak latency during INC-042?", k=2)
+# Targets the chunk inserted last, so insertion order cannot satisfy the ranking.
+late_hits = retrieve(store, "Check transport backhaul before radio tuning?", k=3)
 client = chromadb.PersistentClient(
     path=str(settings.paths.chroma), settings=ChromaSettings(anonymized_telemetry=False)
 )
@@ -121,6 +136,11 @@ print(json.dumps({
     "hits": [
         {**h.chunk.metadata(), "chunk_id": h.chunk.chunk_id, "distance": h.distance}
         for h in hits
+    ],
+    "late_hits": [
+        {"chunk_id": h.chunk.chunk_id, "slide_number": h.chunk.slide_number,
+         "distance": h.distance}
+        for h in late_hits
     ],
     "count": collection.count(),
     "space": collection.configuration["hnsw"]["space"],
@@ -133,9 +153,10 @@ print(json.dumps({
 def test_open_store_fresh_process_reopen_retrieves_chunks(data_dir: Path) -> None:
     """QG-04 (offline): a second process reopens the directory and retrieves chunks."""
     written_ids = _run_child(WRITER, data_dir).strip().split(",")
+    written_ids += _run_child(LATE_WRITER, data_dir).strip().split(",")
     result = json.loads(_run_child(READER, data_dir))
 
-    assert result["count"] == 2
+    assert result["count"] == 3
     assert result["space"] == "cosine"
     assert result["index_config_id"] == result["expected_config_id"]
     top = result["hits"][0]
@@ -146,6 +167,15 @@ def test_open_store_fresh_process_reopen_retrieves_chunks(data_dir: Path) -> Non
         assert hit["source_file"] == "deck.pptx"
         assert hit["file_sha256"] == SHA
     assert result["hits"][0]["distance"] <= result["hits"][1]["distance"]
+
+    # The last-inserted chunk (slide 7) must rank first for its own query, ahead of
+    # the first-inserted chunk (slide 4): ranking follows the query, not insertion.
+    late = result["late_hits"]
+    assert [h["slide_number"] for h in late][0] == 7
+    assert late[0]["chunk_id"] == written_ids[-1] == f"{SHA}-s007-c002"
+    by_slide = {h["slide_number"]: h["distance"] for h in late}
+    assert by_slide[7] < by_slide[4]
+    assert late[0]["distance"] < late[1]["distance"]
 
 
 def test_add_chunks_reupload_keeps_count_stable(make_settings, fake_embeddings) -> None:
@@ -450,6 +480,91 @@ def test_build_messages_separates_policy_from_document_text() -> None:
     assert labels == {"S1": injection}
 
 
+AMBIENT_FAKE_BASE_URL = "https://ambient-override.example.invalid/v1"
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_clients_use_effective_endpoints_despite_ambient_overrides(
+    make_settings, monkeypatch: pytest.MonkeyPatch, configured: bool
+) -> None:
+    """Comment 2: SDK/LangChain env overrides never redirect requests off the index identity."""
+    for name in ("OPENAI_BASE_URL", "OPENAI_API_BASE"):
+        monkeypatch.setenv(name, AMBIENT_FAKE_BASE_URL)
+    monkeypatch.setenv("LANGSMITH_GATEWAY", AMBIENT_FAKE_BASE_URL)
+    overrides = (
+        {
+            "LLM_BASE_URL": "https://chat.example.invalid/v1",
+            "EMBEDDING_BASE_URL": "https://embed.example.invalid/v1",
+        }
+        if configured
+        else {}
+    )
+    settings = make_settings(key=TEST_PLACEHOLDER_KEY, **overrides)
+
+    embeddings = build_embeddings(settings)
+    chat = build_chat_model(settings)
+
+    expected_embed = settings.effective_embedding_base_url
+    expected_chat = settings.effective_llm_base_url
+    assert embeddings.openai_api_base == expected_embed
+    assert str(embeddings.client._client.base_url).rstrip("/") == expected_embed
+    assert chat.openai_api_base == expected_chat
+    assert str(chat.root_client.base_url).rstrip("/") == expected_chat
+    assert str(chat.client._client.base_url).rstrip("/") == expected_chat
+    assert settings.index_config.embedding_endpoint == expected_embed
+    if not configured:
+        assert expected_embed == expected_chat == "https://api.openai.com/v1"
+
+
+@pytest.mark.parametrize(
+    ("run_live", "api_key", "skipped"),
+    [
+        (False, None, True),
+        (False, "sk-fake-for-skip-test", True),
+        (True, None, True),
+        (True, "   ", True),
+        (True, "sk-fake-for-skip-test", False),
+    ],
+)
+def test_live_skip_reason_requires_option_and_nonblank_key(
+    run_live: bool, api_key: str | None, skipped: bool
+) -> None:
+    reason = live_skip_reason(run_live, api_key)
+    assert (reason is not None) is skipped
+    if reason is not None:
+        assert "sk-fake" not in reason
+
+
+@pytest.mark.parametrize("extra_args", [[], ["-m", "integration"]])
+def test_live_checks_skip_without_option_even_with_key(data_dir: Path, extra_args) -> None:
+    """Comment 10: a present (fake) key alone never enables live tests."""
+    env = {k: v for k, v in os.environ.items() if k != "OPENAI_API_KEY"}
+    env["OPENAI_API_KEY"] = "sk-fake-for-skip-test"
+    env["DATA_DIR"] = str(data_dir)
+    script = NETWORK_GUARD_SRC + textwrap.dedent(
+        f"""
+        import sys, pytest
+        sys.exit(pytest.main([
+            {str(Path(__file__))!r}, "-q", "-rs", "-p", "no:cacheprovider",
+            "-k", "stack_proof_live", *{extra_args!r},
+        ]))
+        """
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "3 skipped" in completed.stdout
+    assert "passed" not in completed.stdout and "failed" not in completed.stdout
+    assert "live checks need explicit --run-live" in completed.stdout
+
+
 # ── Deferred live checks (stack-proof). Never run without explicit authorization. ──
 
 
@@ -467,6 +582,8 @@ def test_stack_proof_live_embedding_and_persistent_retrieval(live_settings) -> N
     add_chunks(store, SYNTHETIC_CHUNKS)
     hits = retrieve(store, "What was the peak latency during INC-042?", k=3)
     assert hits and hits[0].chunk.slide_number == 4
+    late = retrieve(store, "What should be checked before radio tuning?", k=3)
+    assert late and late[0].chunk.chunk_id == SYNTHETIC_CHUNKS[-1].chunk_id
     client = chromadb.PersistentClient(
         path=str(live_settings.paths.chroma), settings=ChromaSettings(anonymized_telemetry=False)
     )
