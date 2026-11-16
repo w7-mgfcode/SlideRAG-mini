@@ -23,9 +23,11 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.config import COLLECTION_NAME, load_settings
 from app.rag import (
+    FALLBACK_MESSAGE,
     METADATA_FIELDS,
     SYSTEM_POLICY,
     Chunk,
+    ChunkTooLargeError,
     IndexMismatchError,
     InvalidChunkMetadataError,
     MissingCredentialsError,
@@ -35,6 +37,8 @@ from app.rag import (
     StructuredOutputUnsupportedError,
     _verify_collection,
     add_chunks,
+    answer_question,
+    build_answer_graph,
     build_chat_model,
     build_embeddings,
     build_messages,
@@ -42,8 +46,11 @@ from app.rag import (
     generate_answer,
     open_store,
     retrieve,
+    source_labels,
+    strip_inline_citations,
+    validate_citations,
 )
-from conftest import NETWORK_GUARD_SRC, TEST_PLACEHOLDER_KEY, live_skip_reason
+from conftest import NETWORK_GUARD_SRC, TEST_PLACEHOLDER_KEY, FakeGenerator, live_skip_reason
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TESTS_DIR = Path(__file__).resolve().parent
@@ -654,6 +661,203 @@ def test_live_checks_skip_without_option_even_with_key(
     assert "passed" not in completed.stdout and "failed" not in completed.stdout
     assert "network access blocked" not in completed.stdout + completed.stderr
     assert expected_reason in completed.stdout
+
+
+# ── Provenance validation on write and read (Sourcery #5, #12) ──────────
+
+_VALID = {"source_file": "deck.pptx", "slide_number": 4, "file_sha256": SHA, "chunk_index": 0}
+
+_INVALID_FIELDS = [
+    ("source_file", ""),
+    ("source_file", "../deck.pptx"),
+    ("source_file", "dir/deck.pptx"),
+    ("source_file", "deck\x00.pptx"),
+    ("source_file", "x" * 121),
+    ("slide_number", 0),
+    ("slide_number", -1),
+    ("slide_number", "4"),
+    ("slide_number", True),
+    ("file_sha256", "a" * 63),
+    ("file_sha256", "A" * 64),
+    ("file_sha256", "g" * 64),
+    ("chunk_index", -1),
+    ("chunk_index", "0"),
+]
+
+
+@pytest.mark.parametrize(("field", "value"), _INVALID_FIELDS)
+def test_add_chunks_rejects_invalid_provenance_before_embedding(
+    make_settings, fake_embeddings, field: str, value: object
+) -> None:
+    store = open_store(make_settings(), fake_embeddings)
+    bad = Chunk(text="SYNTHETIC text", **{**_VALID, field: value})
+    with pytest.raises(InvalidChunkMetadataError):
+        add_chunks(store, [SYNTHETIC_CHUNKS[0], bad])
+    assert fake_embeddings.document_calls == 0
+    assert store.get(include=[])["ids"] == []
+
+
+@pytest.mark.parametrize(("field", "value"), [f for f in _INVALID_FIELDS if f[1] != ""])
+def test_retrieve_rejects_invalid_stored_provenance(
+    make_settings, fake_embeddings, field: str, value: object
+) -> None:
+    store = open_store(make_settings(), fake_embeddings)
+    # Written around add_chunks on purpose: simulates tampered or legacy stored metadata.
+    store.add_texts(["SYNTHETIC orphan text"], metadatas=[{**_VALID, field: value}], ids=["x"])
+    with pytest.raises(InvalidChunkMetadataError):
+        retrieve(store, "orphan")
+
+
+def test_add_chunks_rejects_over_cap_and_empty_text(make_settings, fake_embeddings) -> None:
+    store = open_store(make_settings(), fake_embeddings)
+    for text in ("x" * 1001, "   "):
+        with pytest.raises(ChunkTooLargeError):
+            add_chunks(store, [Chunk(text=text, **_VALID)])
+    assert fake_embeddings.document_calls == 0
+    add_chunks(store, [Chunk(text="x" * 1000, **_VALID)])  # exactly at the cap passes
+
+
+# ── Provider errors from embeddings (Sourcery #6) ───────────────────────
+
+
+def test_embedding_provider_errors_map_to_provider_error(make_settings, fake_embeddings) -> None:
+    store = open_store(make_settings(), fake_embeddings)
+    fake_embeddings.fail_next = 1
+    with pytest.raises(ProviderError):
+        add_chunks(store, SYNTHETIC_CHUNKS)
+    assert store.get(include=[])["ids"] == []
+    add_chunks(store, SYNTHETIC_CHUNKS)
+    fake_embeddings.fail_next = 1
+    with pytest.raises(ProviderError):
+        retrieve(store, "What was the peak latency during INC-042?")
+
+
+# ── Answer graph: edges, threshold, labels, C1 citations (QG-06, QG-07) ─
+
+
+def _graph(retrieved, generator, threshold=None):
+    calls: list[str] = []
+
+    def retrieve_fn(question):
+        calls.append(question)
+        return retrieved
+
+    graph = build_answer_graph(retrieve_fn, generator, threshold)
+    graph.retrieve_calls = calls
+    return graph
+
+
+def test_graph_empty_retrieval_takes_no_evidence_edge() -> None:
+    generator = FakeGenerator()
+    result = answer_question(_graph([], generator), "anything")
+    assert result.answered is False
+    assert result.reason == "empty_retrieval"
+    assert result.text == FALLBACK_MESSAGE and result.sources == ()
+    assert generator.calls == 0
+
+
+def test_graph_evidence_takes_generate_edge_with_validated_source() -> None:
+    generator = FakeGenerator(answer="Peak latency was 46 ms [S1].", cited=["S1"])
+    graph = _graph(_retrieved(), generator)
+    result = answer_question(graph, "What was the peak latency during INC-042?")
+    assert graph.retrieve_calls == ["What was the peak latency during INC-042?"]
+    assert generator.calls == 1
+    assert result.answered is True and result.reason is None
+    assert result.text == "Peak latency was 46 ms."  # inline marker stripped
+    assert [(s.source_file, s.slide_number) for s in result.sources] == [
+        ("synthetic-5g-ops.pptx", 4)
+    ]
+    assert generator.seen == {
+        "S1": ("synthetic-5g-ops.pptx", 4),
+        "S2": ("synthetic-5g-ops.pptx", 5),
+        "S3": ("synthetic-5g-ops.pptx", 7),
+    }
+
+
+@pytest.mark.parametrize(
+    ("threshold", "answered", "reason"),
+    [
+        (None, True, None),
+        (0.0, True, None),  # best distance 0.0 == T passes
+        (0.3, True, None),
+        (-0.01, False, "above_threshold"),
+    ],
+)
+def test_graph_threshold_equality_passes_above_refuses(threshold, answered, reason) -> None:
+    generator = FakeGenerator(cited=["S1"])
+    result = answer_question(_graph(_retrieved(), generator, threshold), "question")
+    assert (result.answered, result.reason) == (answered, reason)
+    assert generator.calls == (1 if answered else 0)
+
+
+def test_graph_threshold_uses_best_distance() -> None:
+    retrieved = [RetrievedChunk(c, 0.5 + 0.1 * i) for i, c in enumerate(SYNTHETIC_CHUNKS)]
+    assert answer_question(_graph(retrieved, FakeGenerator(), 0.5), "q").answered is True
+    refused = answer_question(_graph(retrieved, FakeGenerator(), 0.49), "q")
+    assert refused.reason == "above_threshold"
+
+
+def test_source_labels_follow_retrieval_order() -> None:
+    labels = source_labels(_retrieved())
+    assert list(labels) == ["S1", "S2", "S3"]
+    assert [c.slide_number for c in labels.values()] == [4, 5, 7]
+    _, message_labels = build_messages("q", _retrieved())
+    assert message_labels == labels
+
+
+def test_validate_citations_keeps_only_known_labels_and_dedupes() -> None:
+    twin = Chunk("SYNTHETIC second chunk of slide 4", "synthetic-5g-ops.pptx", 4, SHA, 3)
+    retrieved = [*_retrieved(), RetrievedChunk(twin, 0.4)]
+    labels = source_labels(retrieved)
+    sources = validate_citations(["S4", " [S2] ", "S1", "S9", "s1", "", "S2", 7], labels)
+    assert [(s.slide_number, s.file_sha256) for s in sources] == [(4, SHA), (5, SHA)]
+
+
+@pytest.mark.parametrize(
+    ("cited", "insufficient", "reason"),
+    [
+        ([], False, "no_valid_citation"),
+        (["S9", "bogus"], False, "no_valid_citation"),
+        (["S1"], True, "model_insufficient"),
+    ],
+)
+def test_graph_refuses_without_valid_citation_or_on_model_insufficient(
+    cited, insufficient, reason
+) -> None:
+    generator = FakeGenerator(
+        answer="" if insufficient else "x", cited=cited, insufficient=insufficient
+    )
+    result = answer_question(_graph(_retrieved(), generator), "question")
+    assert result.answered is False and result.reason == reason
+    assert result.text == FALLBACK_MESSAGE and result.sources == ()
+
+
+def test_graph_invalid_model_output_refuses() -> None:
+    def malformed(messages):
+        return {"raw": None, "parsed": None, "parsing_error": ValueError("bad json")}
+
+    result = answer_question(_graph(_retrieved(), malformed), "question")
+    assert result.reason == "invalid_model_output" and result.sources == ()
+    only_markers = FakeGenerator(answer="[S1]", cited=["S1"])
+    assert answer_question(_graph(_retrieved(), only_markers), "q").reason == "invalid_model_output"
+
+
+def test_graph_propagates_provider_errors() -> None:
+    generator = FakeGenerator()
+    generator.error = ProviderError("APITimeoutError")
+    with pytest.raises(ProviderError):
+        answer_question(_graph(_retrieved(), generator), "question")
+
+    def failing_retrieve(question):
+        raise ProviderError("APIConnectionError")
+
+    with pytest.raises(ProviderError):
+        answer_question(build_answer_graph(failing_retrieve, FakeGenerator()), "question")
+
+
+def test_strip_inline_citations_keeps_bare_interface_names() -> None:
+    text = "Latency hit 46 ms [S1]. PRB reached 92% (S2, S3) on the S1 interface【S4】."
+    assert strip_inline_citations(text) == "Latency hit 46 ms. PRB reached 92% on the S1 interface."
 
 
 # ── Deferred live checks (stack-proof). Never run without explicit authorization. ──

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SlideRAG Mini</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
+</head>
+<body>
+<main>
+  <header>
+    <h1>SlideRAG Mini</h1>
+    <p class="note">Private demo over synthetic presentations only. Answers cite the slides they come from.</p>
+  </header>
+
+  {% if degraded %}
+  <section class="banner error" role="alert">
+    <strong>Service degraded.</strong> Uploads and questions are disabled until the operator resolves:
+    <ul>{% for reason in degraded %}<li><code>{{ reason }}</code></li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+
+  {% if message %}
+  <section class="banner {{ message.kind }}" role="status">{{ message.text }}</section>
+  {% endif %}
+
+  <section>
+    <h2>Upload a presentation</h2>
+    <form action="/upload" method="post" enctype="multipart/form-data">
+      <input type="file" name="file" accept=".pptx" required>
+      <button type="submit">Upload</button>
+    </form>
+    <p class="note">One .pptx file, at most 10 MiB. Slide text only; notes and images are not indexed.</p>
+  </section>
+
+  <section>
+    <h2>Indexed documents</h2>
+    {% if documents %}
+    <table>
+      <thead><tr><th>File</th><th>Slides</th><th>Chunks</th><th>Indexed (UTC)</th></tr></thead>
+      <tbody>
+      {% for doc in documents %}
+        <tr>
+          <td>{{ doc.source_file }}</td>
+          <td>{{ doc.slide_count }}</td>
+          <td>{{ doc.chunk_count }}</td>
+          <td>{{ doc.indexed_at }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="note">No documents indexed yet.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Ask a question</h2>
+    <form action="/ask" method="post">
+      <textarea name="question" rows="3" maxlength="{{ max_question_chars }}" required>{{ question or '' }}</textarea>
+      <button type="submit">Ask</button>
+    </form>
+  </section>
+
+  {% if result %}
+  <section class="answer" aria-live="polite">
+    <h2>Answer</h2>
+    {% if result.answered %}
+    <p class="answer-text">{{ result.text }}</p>
+    <h3>Sources</h3>
+    <ul class="sources">
+      {% for source in result.sources %}
+      <li>{{ source.source_file }} — slide {{ source.slide_number }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="answer-text fallback">{{ result.text }}</p>
+    <p class="note">Reason: <code>{{ result.reason }}</code></p>
+    {% endif %}
+  </section>
+  {% endif %}
+</main>
+</body>
+</html>
