@@ -8,11 +8,13 @@ mocked evidence only, not proof of real embeddings or native structured output.
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
 import textwrap
 import warnings
+from functools import partial
 from pathlib import Path
 
 import chromadb
@@ -21,7 +23,13 @@ from chromadb.config import Settings as ChromaSettings
 from langchain_core.exceptions import ModelRefusalError
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from app.config import COLLECTION_NAME, load_settings
+from app.config import (
+    COLLECTION_NAME,
+    OPENAI_MAX_RETRIES,
+    OPENAI_TIMEOUT_SECONDS,
+    load_settings,
+)
+from app.ingestion import open_data_root, retrieve_snapshot
 from app.rag import (
     FALLBACK_MESSAGE,
     METADATA_FIELDS,
@@ -55,6 +63,7 @@ from conftest import (
     TEST_PLACEHOLDER_KEY,
     TRACING_FLAGS,
     FakeGenerator,
+    ingest,
     live_skip_reason,
 )
 
@@ -912,6 +921,74 @@ def test_strip_inline_citations_keeps_bare_interface_names() -> None:
     assert strip_inline_citations(text) == "Latency hit 46 ms. PRB reached 92% on the S1 interface."
 
 
+# ── QG-07: every refusal path in one table (load-bearing; do not weaken) ─
+
+EXEC01_FALLBACK = (
+    "I couldn't find sufficient information in the uploaded presentations to answer "
+    "that question. Please upload a relevant document or ask about the indexed material."
+)
+
+
+def _malformed(messages):
+    return {"raw": None, "parsed": None, "parsing_error": ValueError("bad json")}
+
+
+@pytest.mark.parametrize(
+    ("retrieved", "threshold", "generator", "reason"),
+    [
+        ([], None, lambda: FakeGenerator(), "empty_retrieval"),
+        (None, 0.0, lambda: FakeGenerator(cited=["S1"]), None),  # best distance 0.0 == T passes
+        (None, -0.01, lambda: FakeGenerator(cited=["S1"]), "above_threshold"),
+        (
+            None,
+            None,
+            lambda: FakeGenerator(answer="", cited=[], insufficient=True),
+            "model_insufficient",
+        ),
+        (None, None, lambda: _malformed, "invalid_model_output"),
+        (None, None, lambda: FakeGenerator(cited=["S9", "bogus"]), "no_valid_citation"),
+    ],
+    ids=[
+        "empty",
+        "threshold-equal-passes",
+        "threshold-above",
+        "model-insufficient",
+        "invalid-output",
+        "no-valid-citation",
+    ],
+)
+def test_qg07_refusal_paths_return_exact_fallback(retrieved, threshold, generator, reason) -> None:
+    assert FALLBACK_MESSAGE == EXEC01_FALLBACK  # the exact EXEC-01 § 5 wording
+    chunks = _retrieved() if retrieved is None else retrieved
+    result = answer_question(_graph(chunks, generator(), threshold), "question")
+    if reason is None:
+        assert result.answered is True and result.sources and result.text != FALLBACK_MESSAGE
+        return
+    assert (result.answered, result.reason) == (False, reason)
+    assert result.text == EXEC01_FALLBACK
+    assert result.sources == ()
+
+
+# ── #13: every external client is built with finite bounds (offline) ────
+
+
+def test_external_clients_have_finite_timeout_and_retry_bounds(make_settings) -> None:
+    """Construction only, with a placeholder key; the network guard blocks any call."""
+    assert math.isfinite(OPENAI_TIMEOUT_SECONDS) and 0 < OPENAI_TIMEOUT_SECONDS <= 60
+    assert 0 <= OPENAI_MAX_RETRIES <= 3
+    settings = make_settings(key=TEST_PLACEHOLDER_KEY)
+    embeddings = build_embeddings(settings)
+    chat = build_chat_model(settings)
+    assert (embeddings.request_timeout, embeddings.max_retries) == (
+        OPENAI_TIMEOUT_SECONDS,
+        OPENAI_MAX_RETRIES,
+    )
+    assert (chat.request_timeout, chat.max_retries) == (OPENAI_TIMEOUT_SECONDS, OPENAI_MAX_RETRIES)
+    for sdk in (embeddings.client._client, chat.root_client, chat.client._client):
+        assert (sdk.timeout, sdk.max_retries) == (OPENAI_TIMEOUT_SECONDS, OPENAI_MAX_RETRIES)
+    assert callable(build_structured_generator(settings))  # built through build_chat_model
+
+
 # ── Deferred live checks (stack-proof). Never run without explicit authorization. ──
 
 
@@ -959,3 +1036,60 @@ def test_stack_proof_live_incomplete_output_fails_closed(live_settings) -> None:
     result = generate_answer(generate, "Summarize every synthetic slide in detail.", _retrieved())
     assert result.status == "invalid"
     assert result.detail in {"incomplete", "finish_reason_length"}
+
+
+# ── Live evaluation set (test-requirements.md); never run offline ───────
+# Deliberately not named *stack_proof_live*: the skip self-test counts those.
+
+LIVE_EVAL = [
+    ("What was the peak latency during INC-042?", {4}, "46"),
+    ("What PRB utilization was observed during congestion?", {5}, "92"),
+    ("Which conditions contributed to the latency increase?", {4, 5, 7}, None),
+    (
+        "What should an engineer investigate first when latency rises during peak hours?",
+        {7, 8, 9},
+        None,
+    ),
+    ("What is the real current outage status of the operator's nationwide network?", None, None),
+]
+
+
+@pytest.fixture
+def live_root(live_settings, demo_deck: Path):
+    root = open_data_root(live_settings, build_embeddings(live_settings))
+    assert root.degraded == []
+    ingest(root, demo_deck)
+    return root
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("question", "expected_slides", "fact"),
+    LIVE_EVAL,
+    ids=["factual-latency", "factual-prb", "synthesis", "troubleshooting", "unsupported"],
+)
+def test_live_eval_fixed_questions(
+    live_settings, live_root, question, expected_slides, fact
+) -> None:
+    """QG-05/QG-07 live. Citations prove provenance, not semantic support: synthesis and
+    troubleshooting answers still need the manual calibration-and-semantic-review check."""
+    graph = build_answer_graph(
+        partial(retrieve_snapshot, live_root), build_structured_generator(live_settings)
+    )
+    retrieved = {h.chunk.slide_number for h in retrieve_snapshot(live_root, question)}
+    result = answer_question(graph, question)
+    cited = {s.slide_number for s in result.sources}
+    if expected_slides is None:
+        assert result.answered is False and result.sources == ()
+        # Success only via threshold or model refusal, never malformed output.
+        assert result.reason in {"above_threshold", "model_insufficient"}, result.reason
+        return
+    assert result.answered is True, result.reason
+    assert cited <= retrieved  # QG-06
+    if expected_slides == {7, 8, 9}:
+        assert 8 in retrieved and cited & expected_slides  # documented diagnostic steps
+    else:
+        assert expected_slides <= retrieved  # QG-05
+        assert cited & expected_slides
+    if fact is not None:
+        assert fact in result.text
