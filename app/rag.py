@@ -405,7 +405,9 @@ def build_structured_generator(
 
     def generate(messages: list[BaseMessage]) -> Mapping[str, Any]:
         try:
-            return structured.invoke(messages)
+            # Defence in depth: direct calls outside answer_question are untraced too.
+            with tracing_context(enabled=False):
+                return structured.invoke(messages)
         except (openai.LengthFinishReasonError, openai.ContentFilterFinishReasonError) as exc:
             # Raised by the SDK before LangChain's parser fallback can capture it.
             return {"raw": None, "parsed": None, "parsing_error": exc}

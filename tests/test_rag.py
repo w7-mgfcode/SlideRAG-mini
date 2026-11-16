@@ -50,7 +50,13 @@ from app.rag import (
     strip_inline_citations,
     validate_citations,
 )
-from conftest import NETWORK_GUARD_SRC, TEST_PLACEHOLDER_KEY, FakeGenerator, live_skip_reason
+from conftest import (
+    NETWORK_GUARD_SRC,
+    TEST_PLACEHOLDER_KEY,
+    TRACING_FLAGS,
+    FakeGenerator,
+    live_skip_reason,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TESTS_DIR = Path(__file__).resolve().parent
@@ -865,12 +871,12 @@ def ambient_langsmith_tracing(monkeypatch: pytest.MonkeyPatch):
     """
     from langsmith.utils import get_env_var
 
-    monkeypatch.setenv("LANGSMITH_TRACING", "true")
-    monkeypatch.setenv("LANGSMITH_ENDPOINT", "http://127.0.0.1:9")
+    # Overrides the suite-wide no_ambient_tracing guard for this test only; the
+    # loopback endpoint it sets stays in place, and monkeypatch restores everything.
+    for name in TRACING_FLAGS:
+        monkeypatch.setenv(name, "true")
     get_env_var.cache_clear()  # langsmith caches env lookups
     yield
-    monkeypatch.delenv("LANGSMITH_TRACING")
-    monkeypatch.delenv("LANGSMITH_ENDPOINT")
     get_env_var.cache_clear()
 
 

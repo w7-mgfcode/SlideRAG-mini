@@ -39,6 +39,34 @@ _socket.socket.connect_ex = _blocked
 """
 
 
+TRACING_FLAGS = ("LANGSMITH_TRACING", "LANGSMITH_TRACING_V2", "LANGCHAIN_TRACING_V2")
+# Legacy V1 flag: langchain-core refuses "true" outright, so it is removed, not set.
+_LEGACY_TRACING_FLAG = "LANGCHAIN_TRACING"
+_TRACING_ENDPOINTS = ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
+_TRACING_KEYS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
+
+
+@pytest.fixture(autouse=True)
+def no_ambient_tracing(monkeypatch: pytest.MonkeyPatch):
+    """Suite-wide guard (offline and live): tests never send text to LangSmith.
+
+    An ambient developer shell may enable tracing. Force it off, drop any tracing key
+    and point the endpoints at the loopback discard port, so even a regression fails
+    locally instead of uploading test text. langsmith caches env lookups.
+    """
+    from langsmith.utils import get_env_var
+
+    for name in TRACING_FLAGS:
+        monkeypatch.setenv(name, "false")
+    for name in _TRACING_ENDPOINTS:
+        monkeypatch.setenv(name, "http://127.0.0.1:9")
+    for name in (*_TRACING_KEYS, _LEGACY_TRACING_FLAG):
+        monkeypatch.delenv(name, raising=False)
+    get_env_var.cache_clear()
+    yield
+    get_env_var.cache_clear()
+
+
 class HashEmbeddings(Embeddings):
     """Deterministic bag-of-words embedding (offline fake; not semantic).
 
