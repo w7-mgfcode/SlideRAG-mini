@@ -474,6 +474,24 @@ def test_runtime_cleanup_failure_degrades_health(
     assert client.post("/ask", data={"question": "q"}).status_code == 503
 
 
+def test_provider_error_with_failed_cleanup_returns_503(
+    client_factory, demo_deck: Path, fake_embeddings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T23 #4: a degrading rollback outranks the provider 502."""
+    import app.ingestion
+
+    def failing_delete(store, ids):
+        raise RuntimeError("injected")
+
+    client = client_factory()
+    monkeypatch.setattr(app.ingestion, "_delete_chunks", failing_delete)
+    fake_embeddings.fail_next = 1
+    failed = _upload(client, demo_deck)
+    assert failed.status_code == 503 and "injected" not in failed.text
+    health = client.get("/health")
+    assert health.status_code == 503 and health.json()["reasons"] == ["cleanup_failed"]
+
+
 def test_rolled_back_storage_failure_returns_500_and_allows_retry(
     client_factory, demo_deck: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

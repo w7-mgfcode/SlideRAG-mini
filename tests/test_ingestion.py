@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import textwrap
 import zipfile
 from pathlib import Path
@@ -466,16 +467,101 @@ def test_empty_root_is_initialised(make_settings, fake_embeddings, data_dir) -> 
     assert (data_dir / "uploads").is_dir()
 
 
+def _abandoned_app_temporaries(settings) -> list[Path]:
+    """Real app temporaries, created by the same calls the app uses, then abandoned."""
+    upload = stage_upload(io.BytesIO(b"partial upload"), settings).path
+    fd, manifest_tmp = tempfile.mkstemp(
+        dir=settings.paths.root, prefix=ingestion._MANIFEST_TMP_PREFIX, suffix=".tmp"
+    )
+    os.close(fd)
+    return [upload, Path(manifest_tmp)]
+
+
 def test_abandoned_temporaries_are_removed_at_startup(
     make_settings, fake_embeddings, data_dir
 ) -> None:
-    (data_dir / "tmp").mkdir()
-    (data_dir / "tmp" / "abandoned.upload").write_bytes(b"partial")
-    (data_dir / ".manifest-abc.tmp").write_text("{")
+    settings = make_settings()
+    temporaries = _abandoned_app_temporaries(settings)
+    opened = open_data_root(settings, fake_embeddings)
+    assert opened.degraded == []
+    assert not any(t.exists() for t in temporaries)
+    assert list((data_dir / "tmp").iterdir()) == []
+
+
+def test_startup_keeps_foreign_files_and_removes_only_app_temporaries(
+    root, demo_deck: Path, data_dir, make_settings, fake_embeddings
+) -> None:
+    """T23 #1: with a validated manifest only exact app temporary names are deleted."""
+    ingest(root, demo_deck)
+    temporaries = _abandoned_app_temporaries(root.settings)
+    foreign = [
+        data_dir / "tmp" / "operator-notes.txt",
+        data_dir / "tmp" / "sliderag-not-ours.upload",
+        data_dir / ".manifest-backup.tmp",
+    ]
+    for path in foreign:
+        path.write_text("keep me")
+    opened = open_data_root(make_settings(key=TEST_PLACEHOLDER_KEY), fake_embeddings)
+    assert opened.degraded == []
+    assert not any(t.exists() for t in temporaries)
+    assert all(path.read_text() == "keep me" for path in foreign)
+
+
+def test_degraded_root_keeps_even_app_temporaries(
+    root, demo_deck: Path, data_dir, make_settings, fake_embeddings
+) -> None:
+    """Deletion happens only after the manifest validated: a corrupt root is untouched."""
+    ingest(root, demo_deck)
+    temporaries = _abandoned_app_temporaries(root.settings)
+    (data_dir / "manifest.json").write_text("{corrupt")
+    opened = open_data_root(make_settings(key=TEST_PLACEHOLDER_KEY), fake_embeddings)
+    assert opened.degraded == ["manifest_corrupt"]
+    assert all(t.exists() for t in temporaries)
+
+
+def _listing(directory: Path) -> list[str]:
+    return sorted(str(p.relative_to(directory)) for p in directory.rglob("*"))
+
+
+@pytest.mark.parametrize(
+    "foreign",
+    ["README.txt", "tmp/operator-notes.txt", "subdir/data.bin", "lost+found/#12345"],
+    ids=["root-file", "tmp-file", "nested", "non-empty-lost-and-found"],
+)
+def test_non_empty_foreign_root_is_not_initialised(
+    make_settings, fake_embeddings, data_dir, foreign: str
+) -> None:
+    """T23 #2: no manifest plus any unknown entry degrades and writes nothing."""
+    target = data_dir / foreign
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("foreign")
+    before = _listing(data_dir)
+    opened = open_data_root(make_settings(), fake_embeddings)
+    assert opened.degraded == ["unexplained_entries"]
+    assert _listing(data_dir) == before
+    assert target.read_text() == "foreign"
+
+
+def test_empty_lost_and_found_root_is_initialised(make_settings, fake_embeddings, data_dir) -> None:
+    """The ext4 mount root of the EBS volume holds an empty lost+found: still empty."""
+    (data_dir / "lost+found").mkdir()
     opened = open_data_root(make_settings(), fake_embeddings)
     assert opened.degraded == []
-    assert list((data_dir / "tmp").iterdir()) == []
-    assert not (data_dir / ".manifest-abc.tmp").exists()
+    assert (data_dir / "manifest.json").exists() and (data_dir / "lost+found").is_dir()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can list a mode-000 directory")
+def test_unlistable_lost_and_found_root_is_initialised(
+    make_settings, fake_embeddings, data_dir
+) -> None:
+    lost = data_dir / "lost+found"
+    lost.mkdir()
+    lost.chmod(0)
+    try:
+        opened = open_data_root(make_settings(), fake_embeddings)
+    finally:
+        lost.chmod(0o700)
+    assert opened.degraded == []
 
 
 def _corrupt(data_dir: Path, record_sha: str, case: str) -> None:

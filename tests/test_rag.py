@@ -855,6 +855,52 @@ def test_graph_propagates_provider_errors() -> None:
         answer_question(build_answer_graph(failing_retrieve, FakeGenerator()), "question")
 
 
+@pytest.fixture
+def ambient_langsmith_tracing(monkeypatch: pytest.MonkeyPatch):
+    """Simulate LANGSMITH_TRACING=true in the environment (no real env values read).
+
+    The endpoint points at the loopback discard port: if the fix regresses, langsmith's
+    background sender (which can outlive the per-test network guard) fails locally
+    instead of posting test text to the real service.
+    """
+    from langsmith.utils import get_env_var
+
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGSMITH_ENDPOINT", "http://127.0.0.1:9")
+    get_env_var.cache_clear()  # langsmith caches env lookups
+    yield
+    monkeypatch.delenv("LANGSMITH_TRACING")
+    monkeypatch.delenv("LANGSMITH_ENDPOINT")
+    get_env_var.cache_clear()
+
+
+def test_answer_question_disables_ambient_langsmith_tracing(ambient_langsmith_tracing) -> None:
+    """T23 #3: questions, slide text and model output never go to LangSmith."""
+    from langchain_core.runnables.config import ensure_config
+    from langchain_core.tracers.langchain import LangChainTracer
+    from langsmith.utils import tracing_is_enabled
+
+    assert tracing_is_enabled() is True  # precondition: the ambient env would trace
+    observed: dict[str, object] = {}
+
+    def retrieve_fn(question):
+        observed["retrieve"] = tracing_is_enabled()
+        return _retrieved()
+
+    def generator(messages):
+        # Where the real chat model runs: the context and inherited callbacks it sees.
+        observed["generate"] = tracing_is_enabled()
+        callbacks = ensure_config().get("callbacks")
+        handlers = getattr(callbacks, "handlers", callbacks) or []
+        observed["tracer_attached"] = any(isinstance(h, LangChainTracer) for h in handlers)
+        return FakeGenerator()(messages)
+
+    result = answer_question(build_answer_graph(retrieve_fn, generator), "question")
+    assert result.answered is True
+    assert observed == {"retrieve": False, "generate": False, "tracer_attached": False}
+    assert tracing_is_enabled() is True  # the override is scoped to the invocation
+
+
 def test_strip_inline_citations_keeps_bare_interface_names() -> None:
     text = "Latency hit 46 ms [S1]. PRB reached 92% (S2, S3) on the S1 interface【S4】."
     assert strip_inline_citations(text) == "Latency hit 46 ms. PRB reached 92% on the S1 interface."

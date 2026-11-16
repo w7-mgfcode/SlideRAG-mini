@@ -280,6 +280,8 @@ def create_app(
             return error(request, _KIND_STATUS[exc.kind], exc.message)
         except ProviderError as exc:
             logger.warning("upload provider error: %s", exc)
+            if root.degraded:  # rollback failed: degraded (503) outranks the provider 502
+                return error(request, 503, MSG_DEGRADED)
             return error(request, 502, MSG_PROVIDER)
         except Exception as exc:  # storage failure: rolled back, or the root is now degraded
             logger.error("upload failed: %s", type(exc).__name__)

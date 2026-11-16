@@ -25,6 +25,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.exceptions import ModelRefusalError
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
+from langsmith import tracing_context
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from app.config import (
@@ -645,5 +646,11 @@ def build_answer_graph(
 
 
 def answer_question(graph: Any, question: str) -> AnswerResult:
-    """Run the compiled graph for one question and return its final result."""
-    return graph.invoke({"question": question})["result"]
+    """Run the compiled graph for one question and return its final result.
+
+    LangSmith tracing is disabled for the whole invocation (retrieval, generation and
+    the chat-model call inside it): an ambient ``LANGSMITH_TRACING``/``LANGCHAIN_TRACING_V2``
+    must never send questions, slide text or model output to an external service.
+    """
+    with tracing_context(enabled=False):
+        return graph.invoke({"question": question})["result"]

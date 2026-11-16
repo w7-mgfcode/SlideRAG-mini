@@ -62,9 +62,26 @@ logger = logging.getLogger(__name__)
 _COPY_BLOCK = 1024 * 1024
 _REQUIRED_MEMBERS = ("[Content_Types].xml", "ppt/presentation.xml")
 _SLIDE_MEMBER = re.compile(r"ppt/slides/slide\d+\.xml")
+# The app's own temporaries: exact tempfile.mkstemp names (prefix + 8 random characters
+# from tempfile's alphabet + suffix). Only files matching these are ever deleted at startup.
 _MANIFEST_TMP_PREFIX = ".manifest-"
-# Root entries that are not application data (ext4 creates lost+found on a new volume).
-_IGNORED_ROOT_ENTRIES = {"lost+found"}
+_PROBE_TMP_PREFIX = ".probe-"
+_UPLOAD_TMP_PREFIX = "sliderag-"
+_UPLOAD_TMP_SUFFIX = ".upload"
+_MKSTEMP_RANDOM = r"[a-z0-9_]{8}"
+_ROOT_TMP_NAME = re.compile(
+    rf"(?:{re.escape(_MANIFEST_TMP_PREFIX)}{_MKSTEMP_RANDOM}\.tmp"
+    rf"|{re.escape(_PROBE_TMP_PREFIX)}{_MKSTEMP_RANDOM})"
+)
+_UPLOAD_TMP_NAME = re.compile(
+    rf"{re.escape(_UPLOAD_TMP_PREFIX)}{_MKSTEMP_RANDOM}{re.escape(_UPLOAD_TMP_SUFFIX)}"
+)
+# mkfs.ext4 creates lost+found at the root of the EBS volume mounted at /data. It is
+# filesystem metadata, not application data: an empty (or, owned by root with mode
+# 0700, unlistable) lost+found still counts as an empty root. A non-empty one means
+# fsck recovered files there, so the root is not initialised.
+_LOST_AND_FOUND = "lost+found"
+_IGNORED_ROOT_ENTRIES = {_LOST_AND_FOUND}
 
 
 # ── Errors ──────────────────────────────────────────────────────────────
@@ -293,24 +310,59 @@ def retrieve_snapshot(root: DataRoot, question: str) -> list[RetrievedChunk]:
 
 
 def _probe_writable(directory: Path) -> None:
-    fd, name = tempfile.mkstemp(dir=directory, prefix=".probe-")
+    fd, name = tempfile.mkstemp(dir=directory, prefix=_PROBE_TMP_PREFIX)
     os.close(fd)
     Path(name).unlink()
 
 
+def _is_app_temporary(entry: Path, pattern: re.Pattern[str]) -> bool:
+    return pattern.fullmatch(entry.name) is not None and entry.is_file() and not entry.is_symlink()
+
+
 def _remove_abandoned_temporaries(settings: Settings) -> None:
-    """Staging and manifest temporaries are never durable state."""
+    """Delete only the app's own staging/manifest/probe temporaries; leave anything else.
+
+    Called only after the manifest validated or the root was proven entirely empty.
+    """
     paths = settings.paths
     if paths.tmp.is_dir():
         for entry in paths.tmp.iterdir():
-            if entry.is_file() or entry.is_symlink():
+            if _is_app_temporary(entry, _UPLOAD_TMP_NAME):
                 entry.unlink(missing_ok=True)
-    for entry in paths.root.glob(f"{_MANIFEST_TMP_PREFIX}*.tmp"):
-        entry.unlink(missing_ok=True)
+    for entry in paths.root.iterdir():
+        if _is_app_temporary(entry, _ROOT_TMP_NAME):
+            entry.unlink(missing_ok=True)
 
 
 def _has_entries(directory: Path) -> bool:
     return directory.is_dir() and any(directory.iterdir())
+
+
+def _ignorable_lost_and_found(entry: Path) -> bool:
+    if entry.name != _LOST_AND_FOUND or entry.is_symlink() or not entry.is_dir():
+        return False
+    try:
+        return not any(entry.iterdir())
+    except PermissionError:
+        return True  # root-owned 0700 fsck directory; not readable by the app user
+
+
+def _is_empty_root(settings: Settings) -> bool:
+    """True when the root holds nothing but empty app directories, app temporaries and
+    an ignorable lost+found (EXEC-01 § 4: only an entirely empty root is initialised)."""
+    paths = settings.paths
+    for entry in paths.root.iterdir():
+        if entry.name in (paths.uploads.name, paths.chroma.name):
+            if entry.is_symlink() or not entry.is_dir() or _has_entries(entry):
+                return False
+        elif entry.name == paths.tmp.name:
+            if entry.is_symlink() or not entry.is_dir():
+                return False
+            if not all(_is_app_temporary(e, _UPLOAD_TMP_NAME) for e in entry.iterdir()):
+                return False
+        elif not (_is_app_temporary(entry, _ROOT_TMP_NAME) or _ignorable_lost_and_found(entry)):
+            return False
+    return True
 
 
 def _check_consistency(
@@ -349,16 +401,20 @@ def open_data_root(settings: Settings, embeddings: Embeddings | None) -> DataRoo
         root.degrade("data_root_unavailable")
         return root
     try:
-        _remove_abandoned_temporaries(settings)
         documents = read_manifest(settings)
         if documents is None:
             if _has_entries(paths.uploads) or _has_entries(paths.chroma):
                 raise _Inconsistent("manifest_missing")
+            if not _is_empty_root(settings):
+                raise _Inconsistent("unexplained_entries")  # nothing is written
             # Entirely empty root: initialise. The manifest is written first, so a
             # failure after it leaves a root that the next start can still open.
+            _remove_abandoned_temporaries(settings)
             paths.uploads.mkdir(exist_ok=True)
             write_manifest(settings, [])
             documents = {}
+        else:
+            _remove_abandoned_temporaries(settings)  # manifest validated
         paths.tmp.mkdir(exist_ok=True)
         store = open_store(settings, embeddings)
         reasons = _check_consistency(store, documents, settings)
@@ -408,7 +464,7 @@ def stage_upload(source: BinaryIO, settings: Settings) -> StagedUpload:
     tmp_dir.mkdir(exist_ok=True)
     digest = hashlib.sha256()
     size = 0
-    fd, name = tempfile.mkstemp(dir=tmp_dir, suffix=".upload")
+    fd, name = tempfile.mkstemp(dir=tmp_dir, prefix=_UPLOAD_TMP_PREFIX, suffix=_UPLOAD_TMP_SUFFIX)
     path = Path(name)
     try:
         with os.fdopen(fd, "wb") as handle:
