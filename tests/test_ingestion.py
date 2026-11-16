@@ -625,18 +625,23 @@ def test_concurrent_reader_thread_never_observes_partial_ingest(
             except BusyError:
                 during.append("busy")
 
-    writer.start()
-    assert paused.wait(10)
-    assert stored_ids(data_dir)  # the partial state really exists on disk right now
     reader_thread = threading.Thread(target=reader)
-    reader_thread.start()
-    deadline = time.monotonic() + 5
-    while len(during) < 25 and time.monotonic() < deadline:
-        time.sleep(0.001)
-    stop.set()
-    reader_thread.join(10)
-    resume.set()
-    writer.join(10)
+    writer.start()
+    try:
+        assert paused.wait(10)
+        assert stored_ids(data_dir)  # the partial state really exists on disk right now
+        reader_thread.start()
+        deadline = time.monotonic() + 5
+        while len(during) < 25 and time.monotonic() < deadline:
+            time.sleep(0.001)
+    finally:
+        # Always release and join both threads, even when an assertion above fails.
+        stop.set()
+        if reader_thread.is_alive():
+            reader_thread.join(10)
+        resume.set()
+        writer.join(10)
+    assert not reader_thread.is_alive() and not writer.is_alive()
 
     assert len(during) >= 25 and set(map(str, during)) == {"busy"}
     record = outcome["o"].record

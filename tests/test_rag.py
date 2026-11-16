@@ -1071,8 +1071,14 @@ def live_root(live_settings, demo_deck: Path):
 def test_live_eval_fixed_questions(
     live_settings, live_root, question, expected_slides, fact
 ) -> None:
-    """QG-05/QG-07 live. Citations prove provenance, not semantic support: synthesis and
-    troubleshooting answers still need the manual calibration-and-semantic-review check."""
+    """QG-05/QG-07 live. Citations prove provenance, not semantic support.
+
+    The synthesis and troubleshooting checks are deliberately lenient. They require
+    the expected slides to be retrieved, but only one of them has to be cited
+    (troubleshooting: slide 8 retrieved and one of 7-9 cited). Semantic support and full citation
+    coverage (all of 4, 5 and 7; the steps from 7-9) remain the manual
+    calibration-and-semantic-review check and are not asserted here.
+    """
     graph = build_answer_graph(
         partial(retrieve_snapshot, live_root), build_structured_generator(live_settings)
     )
